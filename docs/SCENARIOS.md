@@ -99,7 +99,7 @@
 |---|---|
 | Debit matching INV-201's payment (ref + amount) | MATCHED; settlement MATCHED |
 | A **second** debit with the same ref/amount | CONFLICT → DUPLICATE_DEBIT **CRITICAL** + recovery case OPEN (action "contact bank/provider; request return"); Delhivery contained |
-| A debit to Blue Dart ₹22,500 marked RETURNED | PAYMENT_RETURNED (HIGH); the history payment is reopened for review |
+| A debit to Blue Dart ₹22,500 marked RETURNED | PAYMENT_RETURNED (**CRITICAL**); Blue Dart contained. The history payment was made outside PayPilot (no `payments` row), so there is no REVERSAL entry or recovery case; the exception's recommended action says so |
 | A debit with no matching instruction | UNMATCHED (MEDIUM exception) |
 | Then `resolve-exception … --resolution RECOVERED` **without** evidence | refused |
 
@@ -130,7 +130,7 @@ After SC-01…SC-11, run `audit verify` over every run.
 | Exit 0. Every decision_hash re-derives from the stored facts + policy snapshot; every PAID item ↔ one approval ↔ one confirmed attempt ↔ one payment journal entry; trial balance Σ = 0; every output fact → a stored source | the `audit verify` report |
 | Tamper test: edit one journal line's amount in a copy of the DB → `audit verify` exits non-zero and names the entry | `tests/integration/test_audit_verify.py` |
 
-### SC-13 RazorpayX test-mode vendor payout (opt-in: `--provider razorpayx_test`, needs H7)
+### SC-13 RazorpayX test-mode vendor payout (opt-in: `--provider razorpayx_test`, needs H7). **BLOCKED until lane B supplies a live-verified ‹IFSC-B›**
 Runs SC-03 INV-201 against RazorpayX Payouts **test mode**: a dummy balance, no real money, no bank settlement. The vendor's account number is the fictional fixture account. **P0 fixture dependency:** ‹IFSC-B› (V-0003) must be a real public IFSC: 11 characters, `^[A-Z]{4}0[A-Z0-9]{6}$`, and verified live by lane B (task B4) with a 200 from the IFSC API before SC-13 runs. SC-13 is blocked while it is still a placeholder; we don't invent a code or relax validation.
 
 | Step | Expected | Asserted on |
@@ -138,8 +138,9 @@ Runs SC-03 INV-201 against RazorpayX Payouts **test mode**: a dummy balance, no 
 | 1. Startup | prints `Payment provider: RazorpayX TEST MODE (no real money)`; a non-`rzp_test_` key → exit 2 | stdout / exit code |
 | 2. `approve INV-201 --by "Finance Controller"` | one `POST /v1/payouts` with `X-Payout-Idempotency`; `provider_ref = pout_…` persisted; RazorpayX status `processing` → payment SUBMITTED, item **PAYMENT_IN_PROGRESS (not PAID)**; no payment journal entry | DB, `payment_instructions.csv` (`provider_status=processing`), ledger row `razorpayx_test` |
 | 3. Move the payout to `processed` in the test Dashboard → `resume` | retrieve → `processed` → PROVIDER_CONFIRMED / **PAID**; INVOICE_PAYMENT journal entry; settlement NOT_AVAILABLE | DB, audit, `audit verify` |
-| 4. Variant: move it to `failed` (or `reversed`) instead | FAILED → item HELD; the same key is never re-sent as a new payout | DB, exceptions |
+| 4. Variant: move it to `failed` (or `reversed`) *before* `processed` | a decline before success: FAILED → item HELD; retry only with a new approval; the same key is never re-sent as a new payout | DB, exceptions |
 | 5. Crash drill: `PAYPILOT_CRASH_AT=after_create_response_before_ref` then `resume` | the same idempotency key + body is replayed → the same `pout_…`; the Dashboard shows **one** payout | Dashboard, DB |
+| 6. Variant, after step 3: move the `processed` payout to `reversed` (if the test Dashboard allows it; unverified) → `resume` | payment REVERSED; item PAID → HELD; REVERSAL journal entry; PAYMENT_RETURNED **CRITICAL** + recovery case; Delhivery contained; no new payout | DB, journal, exceptions, `audit verify` |
 
 ## 4. Coverage of the team's required test cases
 | Required case | Scenario |

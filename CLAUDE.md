@@ -20,7 +20,7 @@
 ## Hard rules
 1. **Persist before side effects:** ledger row before any call; payment + attempt rows before any provider call; balanced journal entry in the same txn as POSTED/PAID; `provider_ref` before confirm; state change + audit event in **one** transaction; CAS on `(state, version)`. If a write fails → exit 70 before any provider call.
 2. **Reconcile first** on every `run` / `resume` / `approve`. Unknown outcome → `PAYMENT_UNCERTAIN`. **Never create a payment because a search came back empty.**
-3. **`payment_key` is immutable.** A new `attempt_key` only after a provider-confirmed decline/return **and** a fresh approval. Never add approval ids or versions to a key.
+3. **`payment_key` is immutable.** A new `attempt_key` only after a provider-confirmed decline before success **and** a fresh approval; a reversal after success is never retried. Never add approval ids or versions to a key.
 4. **Approvals** bind to `decision_hash`; the approver must be in the policy allowlist; NEVER_OVERRIDABLE is refused; vendor containment is checked inside the enqueue transaction.
 5. **Provider:** FakeProvider is the default and the test target; RazorpayX Payouts **test mode** (`razorpayx_test`) is the real provider (P0, INTERFACES §8): only `rzp_test_` keys, refuse anything else, no live option, no fallback between providers. PAID only on a documented terminal success. Secrets only from `.env`, never logged. No LLM.
 6. **Accounts:** HMAC fingerprint + last 4 at load. Never log or store the raw number.

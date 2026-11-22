@@ -15,7 +15,14 @@ Append one entry per change to a shared contract (`schemas.py`, `context.py`, `f
 - **Change:**
   - models / DB: `Approval.approval_seq` + `approvals.approval_seq` (UNIQUE now `(item_id, decision_hash, approval_seq)`); `PaymentAttempt.approval_id` + `payment_attempts.approval_id`. `approval_id` = sha256(item_id | decision_hash | approval_seq)[:16]. Payment and attempt keys unchanged.
   - CLI: `approve` / `reject` / `show` take `ITEM` (exact `item_id` or a unique `invoice_id` / `line_id` / `message_id`) + `--run`; ambiguous → exit 2.
-  - config: `payments.razorpayx_test.idem_replay_window_h: 24` (was 1); documented key validity 168 h.
+  - config: `payments.razorpayx_test.idem_replay_window_h: 24` (was 1); claimed key validity 168 h (unverified).
   - output: `payment_instructions.csv` has one row per `payments` row in every status, including `PAYMENT_UNCERTAIN`.
 - **Affected modules and tests:** `schemas.py`, `db/schema.sql`, `core/ids.py`, `approvals/`, `payments/`, `cli/`, `reports/`, `audit/verify`; `tests/contract/test_cli_selector.py`, `integration/test_decline_then_retry.py`, `integration/test_approvals.py`.
 - **Status:** applied in the docs (INTERFACES §4–§10); code pending (A0)
+
+## 2026-11-22: reversal after success
+- **Requested by (lane):** H
+- **Reason:** simplify reversal handling; no retry after a reversal in this build.
+- **Change:** item transition `PAID → HELD` (reversal after success only); `NEVER_OVERRIDABLE` += `RETURNED_PAYMENT`, `REVERSED_PAYMENT`; `PAYMENT_RETURNED` severity CRITICAL + recovery case; `REVERSAL` journal entry = mirror of `INVOICE_PAYMENT` (existing kind, one per item); attempt n+1 / `approval_seq` n+1 only after a decline before success.
+- **Affected modules and tests:** `core/state.py`, `core/journal.py`, `payments/`, `flags.py` (C), `exceptions.map` (C), `audit/verify`; `integration/test_reversal_after_success.py`.
+- **Status:** applied in the docs; code pending

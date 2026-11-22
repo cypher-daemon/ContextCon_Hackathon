@@ -167,11 +167,11 @@ An item is **never** `PAID` because it was approved, a payout request was sent, 
 **How:**
 1. **Two keys:**
    - The **logical payment key** = hash(client, vendor, canonical invoice no., amount, currency). It never changes and has a local UNIQUE constraint.
-   - The **provider attempt key** = logical key + `:a<n>`. Attempt *n+1* is allowed only after the provider has *confirmed* that attempt *n* failed or was returned, and only with a fresh approval. (RazorpayX documents that a payout in a failed state means every request with that idempotency key has failed, and that retrying with a fresh key while the first is still processing can pay twice. So a new attempt key comes only after a provider-confirmed terminal failure.)
+   - The **provider attempt key** = logical key + `:a<n>`. Attempt *n+1* is allowed only after the provider has *confirmed* that attempt *n* was declined before success, and only with a fresh approval. A reversal after confirmed success is never retried: it reverses the journal entry, opens a CRITICAL recovery exception and contains the vendor. (RazorpayX documents that a payout in a failed state means every request with that idempotency key has failed, and that retrying with a fresh key while the first is still processing can pay twice. So a new attempt key comes only after a provider-confirmed terminal failure.)
 2. **Outbox:** the payment row is committed *after* approval and *before* any provider call.
 3. **Provider call, recorded step by step:** `create` → **persist the provider ref** → `confirm`. Each step has its own provider idempotency key, and a `step` column records which call may have landed. FakeProvider uses a real two-step create/confirm. RazorpayX creates and initiates the payout in **one** call (`POST /v1/payouts`, header `X-Payout-Idempotency`). Its `confirm()` makes no money-moving call: it only retrieves status (INTERFACES §8).
 4. **Reconcile before acting:** every `run`, `resume` and `approve` reconciles open payments with the provider *before* any new work.
-5. **Fail closed:** if the provider is unreachable, returns an unrecognised status, or the replay window has passed (RazorpayX: 24 h configured, inside the documented 168 h key validity) and no lookup can prove the outcome, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
+5. **Fail closed:** if the provider is unreachable, returns an unrecognised status, or the replay window has passed (RazorpayX: 24 h configured; the claimed 168 h key validity (UNVERIFIED: official source not yet checked)) and no lookup can prove the outcome, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
 6. **Containment:** while a CRITICAL payment exception is open for a vendor, no new payment to that vendor can be queued.
 
 ```mermaid
@@ -231,6 +231,7 @@ stateDiagram-v2
   PAYMENT_UNCERTAIN --> FAILED: reconcile evidence
   FAILED --> HELD: fresh checks + approval before retry
   POSTED --> [*]
+  PAID --> HELD: reversed/returned after success (REVERSAL entry + CRITICAL recovery case; no retry)
   PAID --> [*]
   REJECTED --> [*]
   CANNOT_VERIFY --> [*]
@@ -279,7 +280,7 @@ stateDiagram-v2
 **Rules:**
 - Every transition is compare-and-swap on `(state, version)`, with an audit event written in the **same transaction**.
 - A change to client data or decision policy moves non-final items to `STALE` → re-decided. A pending approval whose `decision_hash` no longer matches is `SUPERSEDED`.
-- `PAID`, `POSTED`, `REJECTED` and `CANNOT_VERIFY` are never re-run.
+- `PAID`, `POSTED`, `REJECTED` and `CANNOT_VERIFY` are never re-run. The one exit from `PAID` is a provider-reported reversal after success, which goes to `HELD` for a human-led recovery and is never paid again automatically.
 
 ---
 
@@ -315,7 +316,7 @@ The full DDL, with every UNIQUE constraint that enforces "at most once", is in [
 - **Policy snapshot per run.** The exact merged config and policy, plus the client-data hash, are stored on the run row.
 - **`audit verify`** replays the run line by line from the database alone:
   1. Re-runs `decide()` on the stored facts and policy snapshot → the same `decision_hash` for every item.
-  2. Every PAID item has one confirmed provider attempt, linked to an APPROVED approval with the matching hash, and one payment journal entry. Every attempt n > 1 has its own, later approval (`approval_seq` n) and follows a provider-confirmed failure of attempt n−1.
+  2. Every reversed payment has exactly one INVOICE_PAYMENT and one REVERSAL entry, plus a CRITICAL exception with a recovery case. Every PAID item has one confirmed provider attempt, linked to an APPROVED approval with the matching hash, and one payment journal entry. Every attempt n > 1 has its own, later approval (`approval_seq` n) and follows a provider-confirmed failure of attempt n−1.
   3. No payment key has more than one confirmed attempt.
   4. Every journal entry balances, and the trial balance sums to zero.
   5. Every state change has an unbroken audit-event chain.

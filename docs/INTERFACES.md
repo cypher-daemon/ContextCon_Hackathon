@@ -234,9 +234,9 @@ class RunSummary(BaseModel): run_id: str; request_id: str; client_id: str; opera
 | `item_id` | sha256(client_id \| request_sha \| input_name \| row_no)[:20] |
 | `transaction_fingerprint` | With a bank reference/UTR: sha256("ref" \| bank_reference). Else bank line: sha256(descriptor_key \| amount_paise \| currency \| date \| direction). Invoice: sha256(vendor_name_key \| invoice_no_canonical). A signal, not proof, unless UTR-based |
 | `payment_key` (logical) | `pp_` + sha256(client_id \| vendor_id \| invoice_no_canonical \| amount_paise \| currency)[:32]. **Immutable.** A PAY item without an invoice number is CANNOT_VERIFY (`MISSING_FIELD`) |
-| `attempt_key` (provider) | `{payment_key}:a{n}`; per-step keys `{attempt_key}:create` / `{attempt_key}:confirm`. n+1 only after a provider-confirmed DECLINED / RETURNED / REVERSED **and** a new approval. RazorpayX's `X-Payout-Idempotency` allows only 4–36 characters (letters, digits, `-`, `_`, space), so the adapter sends `uuid5(PAYPILOT_NS, "{attempt_key}:create")` (36 chars), derived deterministically and never random. `reference_id` = `attempt_key` (≤ 40 chars) |
+| `attempt_key` (provider) | `{payment_key}:a{n}`; per-step keys `{attempt_key}:create` / `{attempt_key}:confirm`. n+1 only after a provider-confirmed **decline before success** (DECLINED / CANCELED, or reversed before success) **and** a new approval. A reversal or return **after** confirmed success is never retried (§8). RazorpayX's `X-Payout-Idempotency` allows only 4–36 characters (letters, digits, `-`, `_`, space), so the adapter sends `uuid5(PAYPILOT_NS, "{attempt_key}:create")` (36 chars), derived deterministically and never random. `reference_id` = `attempt_key` (≤ 40 chars) |
 | `decision_hash` | sha256(canonical_json(Facts) \| policy.decision_hash_input). The input covers only decision-relevant config (rules, thresholds, mappings, tolerances) + data_hash. **Never timestamps, source ids or output/limit/logging config** |
-| `approval_id` | sha256(item_id \| decision_hash \| approval_seq)[:16]. `approval_seq` starts at 1. Seq n+1 may be requested **only** when the payment's latest attempt has a provider-confirmed DECLINED / RETURNED / REVERSED outcome and the item is back in HELD after fresh checks. Otherwise a second approve is a no-op. Approval ids never enter `payment_key` or `attempt_key` |
+| `approval_id` | sha256(item_id \| decision_hash \| approval_seq)[:16]. `approval_seq` starts at 1. Seq n+1 may be requested **only** when the payment's latest attempt has a provider-confirmed decline before success and the item is back in HELD after fresh checks. Otherwise a second approve is a no-op. Approval ids never enter `payment_key` or `attempt_key` |
 | `source_id` | sha256(provider \| record_ref \| fact \| field_or_passage)[:16] (retrieval time excluded) |
 | `exception_id` | sha256(item_id \| payment_id \| type \| origin_key)[:16] |
 | `call_key` | sha256(run_id \| item_id \| stage \| provider \| operation \| request_hash \| attempt) |
@@ -280,6 +280,8 @@ CREATE TABLE journal_lines (entry_id TEXT NOT NULL REFERENCES journal_entries, l
   account TEXT NOT NULL, debit_paise INTEGER NOT NULL DEFAULT 0 CHECK(debit_paise >= 0),
   credit_paise INTEGER NOT NULL DEFAULT 0 CHECK(credit_paise >= 0), PRIMARY KEY(entry_id, line_no));
 -- balance (sum of debits = sum of credits per entry) is enforced in the same txn by core and re-checked by `audit verify`
+-- REVERSAL = the mirror of the item's INVOICE_PAYMENT (Dr Bank – payments clearing / Cr AP – vendor), written in the same txn as payment
+--   PROVIDER_CONFIRMED → RETURNED/REVERSED. UNIQUE(item_id, kind) allows one per item: there is no retry after a reversal
 CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items, decision_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN('PENDING','APPROVED','REJECTED','SUPERSEDED')), reviewer TEXT, reason TEXT,
   overrides_json TEXT NOT NULL DEFAULT '[]', requested_at TEXT NOT NULL, decided_at TEXT,
@@ -331,7 +333,7 @@ payments: {provider: fake, currency: INR, idem_window_h: 23,         # provider 
            razorpayx_test: {base_url: https://api.razorpay.com/v1, mode: IMPS, purpose: vendor bill,
                             idem_replay_window_h: 24, call_timeout_s: 20}}
   # .env (never committed): RAZORPAYX_KEY_ID (must start rzp_test_), RAZORPAYX_KEY_SECRET, RAZORPAYX_ACCOUNT_NUMBER (test-mode Customer Identifier)
-  # idem_replay_window_h: RazorpayX documents a 7-day (168 h) idempotency-key validity (team-supplied; doc link to cite in DECISIONS §3; not yet checked by us).
+  # idem_replay_window_h: a 7-day (168 h) RazorpayX key validity is claimed but UNVERIFIED (official source not yet checked; DECISIONS §3).
   # We replay only within 24 h: that covers the one-day event with a wide margin. Past it → PAYMENT_UNCERTAIN, never a new create.
 approvals: {approvers: [], lock_wait_s: 10}               # [] = any name (declared identity); policy.yaml sets the allowlist
 costs:
@@ -444,7 +446,7 @@ class PaymentProvider(Protocol): # A: payments/fake.py (default, test target); p
 | `create` | `POST /v1/payouts` (composite: contact + fund account + payout), basic auth `key_id:key_secret`, header `X-Payout-Idempotency` | Creates **and initiates** the payout in one call, so it returns `PROCESSING` (never `REQUIRES_CONFIRMATION`). `account_number` = `RAZORPAYX_ACCOUNT_NUMBER`. `fund_account.bank_account` comes from the vendor master: at execute time `io/` re-reads the row, checks `HMAC(raw) == approved account_fingerprint` (a mismatch → refuse, `BANK_CHANGED`), and passes the raw number **in memory only**, never logged, stored or hashed into `request_hash`. The body is built deterministically from the payment row + the vendor-master row, because the same key with a different body is rejected (`BAD_REQUEST`) |
 | `confirm` | none: `GET /v1/payouts/{id}` | No money-moving call. It keeps the executor's step sequence unchanged |
 | `retrieve` | `GET /v1/payouts/{id}` | Used by `reconcile_open` |
-| `find_by_attempt_key` | **no search endpoint is used or assumed.** It replays the identical `create` request (same idempotency key, byte-identical body), only while the attempt is younger than `idem_replay_window_h` (24 h, inside the documented 168 h validity); otherwise it returns `None` without any call | Docs: the first response is saved and returned for the same key. `None` → PAYMENT_UNCERTAIN; **never create** |
+| `find_by_attempt_key` | **no search endpoint is used or assumed.** It replays the identical `create` request (same idempotency key, byte-identical body), only while the attempt is younger than `idem_replay_window_h` (24 h; the claimed 168 h key validity (UNVERIFIED: official source not yet checked)); otherwise it returns `None` without any call | Docs: the first response is saved and returned for the same key. `None` → PAYMENT_UNCERTAIN; **never create** |
 | `refund` | not supported (payouts aren't refunded) | raises `NotSupported`; recovery stays a human-led recovery case |
 
 | RazorpayX `status` | Terminal? | `ProviderPayment.status` | Payment / item |
@@ -452,8 +454,10 @@ class PaymentProvider(Protocol): # A: payments/fake.py (default, test target); p
 | `queued`, `pending`, `scheduled`, `processing` | no | `PROCESSING` | `SUBMITTED` / `PAYMENT_IN_PROGRESS`; re-polled on every `run` / `resume` |
 | `processed` | yes | `SUCCEEDED` | `PROVIDER_CONFIRMED` / `PAID` (settlement still separate) |
 | `rejected`, `cancelled`, `failed` | yes | `DECLINED` / `CANCELED` | `FAILED` → item `HELD`; attempt n+1 only with a fresh approval |
-| `reversed` | yes (docs also mention reversed → failed on RazorpayX current accounts; both are non-success) | `RETURNED` | before success: `FAILED`; after `PROVIDER_CONFIRMED`: `REVERSED` + `REVERSED_PAYMENT` exception |
+| `reversed` | yes (docs also mention reversed → failed on RazorpayX current accounts; both are non-success) | `RETURNED` | before success: `FAILED` (retryable like a decline); after `PROVIDER_CONFIRMED`: see **Reversal after success** below |
 | anything else / missing | — | raise | `PAYMENT_UNCERTAIN` |
+
+**Reversal after success** (RazorpayX `reversed`, or FakeProvider `RETURNED`, after `PROVIDER_CONFIRMED`). In one transaction: payment → `REVERSED` / `RETURNED`; item `PAID → HELD` with `REVERSED_PAYMENT` / `RETURNED_PAYMENT` (never overridable); a `REVERSAL` journal entry; a **CRITICAL** `PAYMENT_RETURNED` exception + recovery case; audit event. The open CRITICAL exception contains the vendor, so no further payout to it is queued automatically. There is no retry-after-reversal workflow in this build.
 
 Test-mode facts relied on: payouts start in `processing` and stay there until someone moves them by hand in the RazorpayX test Dashboard (to `processed`, `failed`, `reversed`, …); test mode uses a dummy balance and no real money. `utr` may be null even when `processed`.
 

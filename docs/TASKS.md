@@ -65,6 +65,7 @@
 | ID | Task | Lane | Deps | Est | P | Done when |
 |---|---|---|---|---|---|---|
 | ★A11 | Exception + recovery persistence (upsert drafts by `exception_id`), CLI exceptions/exception/resolve-exception (uses C's lifecycle evidence rule) | A | A8, C7b | 45m | P0 | RECOVERED without evidence refused |
+| ★A11b | Reversal after success: payment → RETURNED/REVERSED + item PAID → HELD + REVERSAL journal entry + CRITICAL exception/recovery case + audit, in one txn; vendor contained; no retry path. FakeProvider fault `RETURNED_AFTER_SUCCESS`. `integration/test_reversal_after_success.py` | A | A8, A11, C7a | 25m | P0 | test green; trial balance Σ = 0; a new approve for that item is refused; `audit verify` passes |
 | ★A12 | RECONCILE operation wiring (statement load, three_way per payment/line, exceptions, containment) | A | A11, C8 | 40m | P0 | SC-07 green |
 | ★A13 | STALE on data/policy change + approval SUPERSEDE; limits → PARTIAL / STOPPED_COST; unsupported-request run-level result | A | A7 | 40m | P0 | SC-09, SC-10, data-change test |
 | ★C7b | `exceptions/lifecycle.py` (allowed transitions; RESOLVED/RECOVERED need evidence) + `exceptions/recovery.py` (prepare case + action) | C | C7a | 30m | P0 | unit tests |

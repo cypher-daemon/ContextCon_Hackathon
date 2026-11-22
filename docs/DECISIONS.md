@@ -39,7 +39,7 @@
 | Question | Default | Owner |
 |---|---|---|
 | Do we have RazorpayX test-mode API access (test keys, test Customer Identifier, any KYC or IP-allowlist prerequisite for test mode)? | Unverified. Until H7 passes: FakeProvider only, and the README and video say the provider requirement is **not yet met** | H |
-| RazorpayX idempotency-key validity: documented as 7 days / 168 h (team-supplied; cite the doc link here). Search by `reference_id`: not documented, not used | Replay only within `idem_replay_window_h: 24` (one-day event); after that → PAYMENT_UNCERTAIN, reconciled by hand in the test Dashboard | H (add the link) / A |
+| RazorpayX idempotency-key validity: claimed 7 days / 168 h, **UNVERIFIED** until the official source is checked and linked here. Search by `reference_id`: not documented, not used | Replay only within `idem_replay_window_h: 24` (one-day event); after that → PAYMENT_UNCERTAIN, reconciled by hand in the test Dashboard | H (add the link) / A |
 | ₹ per Crustdata credit? | `null` → shown as UNKNOWN | H (ask the Crustdata team) |
 | Crustdata endpoint paths for identify / web fetch | B confirms them from docs.crustdata.com/llms.txt before B5 | B |
 | Real IFSC codes for the fixtures | B verifies live before committing | B |
@@ -49,6 +49,7 @@
 | Date | Change | Agreed by |
 |---|---|---|
 | 2026-11-22 | Consolidated plan v4: own product + scenarios; GPT team docs + Claude/Codex plans merged; originals archived in `docs/archive/` | team |
+| 2026-11-22 | v4.4 (docs frozen): a decline before success is retryable with a fresh approval; a reversal after success → REVERSAL entry + CRITICAL recovery exception + vendor contained, no retry; SC-13 blocked until B4's IFSC; 168 h validity marked unverified | team |
 | 2026-11-22 | v4.3: `approval_seq` + per-attempt `approval_id` (fresh approval for a retry after a confirmed failure); CLI item selector (`item_id` or a unique source id); SC-13 needs the B4-verified ‹IFSC-B› (P0); RazorpayX key validity 168 h documented, replay window 24 h; `find_by_attempt_key` = same-key replay, no search; export row timing; A9 moved to S3; agents commit, humans push | team |
 | 2026-11-22 | v4.2: RazorpayX Payouts test mode replaces Stripe as the real provider (P0 if access verified); PAID = documented terminal success, separate from posting and settlement; `payment_instructions.csv` = audit export with `do_not_execute`; `DateBasis` drops `HTTP_DATE_HEADER` / `FETCH_TIME` (retrieval time lives only in `retrieved_at`); organizer I/O adapter task; Crustdata functions P0 in INTERFACES | team |
 | 2026-11-22 | v4.1: provider-agnostic (FakeProvider foundation, Stripe optional); Crustdata = live data; no LLM; bookkeeping journal + `audit verify`; scenario tests assert DB, files, audit log; added SC-11, SC-12, INV-206 | team |

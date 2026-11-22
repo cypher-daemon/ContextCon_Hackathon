@@ -15,7 +15,7 @@
 | Payment | `PROVIDER_TIMEOUT`, `PAYMENT_UNCERTAIN`, `WRONG_PAYEE_SUSPECTED`, `AMOUNT_MISMATCH`, `SETTLEMENT_MISMATCH`, `RETURNED_PAYMENT`, `REVERSED_PAYMENT`, `STALE_APPROVAL`, `VENDOR_CONTAINED` |
 | System | `PERSISTENCE_FAILURE` (never a DB row; see §2 last row) |
 
-**`NEVER_OVERRIDABLE`** = `PAYEE_UNRESOLVED, PAYEE_TIE, LOOKALIKE, PARENT_BRAND, VENDOR_MASTER_CONFLICT, BANK_CHANGED, BANK_CHANGE_REQUEST, IFSC_INVALID, DUPLICATE_INVOICE, ALREADY_PAID, DUPLICATE_PAYMENT, DUPLICATE_DEBIT, WRONG_PAYEE_SUSPECTED, AMOUNT_MISMATCH, PAYMENT_UNCERTAIN, PROVIDER_TIMEOUT, MISSING_FIELD, PARSE_FAILED, UNSUPPORTED_REQUEST, VENDOR_CONTAINED, PERSISTENCE_FAILURE`.
+**`NEVER_OVERRIDABLE`** = `PAYEE_UNRESOLVED, PAYEE_TIE, LOOKALIKE, PARENT_BRAND, VENDOR_MASTER_CONFLICT, BANK_CHANGED, BANK_CHANGE_REQUEST, IFSC_INVALID, DUPLICATE_INVOICE, ALREADY_PAID, DUPLICATE_PAYMENT, DUPLICATE_DEBIT, WRONG_PAYEE_SUSPECTED, AMOUNT_MISMATCH, PAYMENT_UNCERTAIN, PROVIDER_TIMEOUT, RETURNED_PAYMENT, REVERSED_PAYMENT, MISSING_FIELD, PARSE_FAILED, UNSUPPORTED_REQUEST, VENDOR_CONTAINED, PERSISTENCE_FAILURE`.
 Client policy may make overrides stricter, never looser. The CLI enforces it.
 
 **Severity rule:** `CRITICAL` = money may already be wrong. `HIGH` = an unsafe payment action was blocked. `MEDIUM` = an item is held for missing or unavailable data. `LOW` = informational.
@@ -48,13 +48,13 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | 22 | Unsupported or missing operation (a "question" request) | request validation | Run-level CANNOT_VERIFY result, exit 0 | INPUT_UNSUPPORTED / LOW | — | `integration/test_unsupported_request.py` |
 | 23 | Provider timeout after create/confirm | exception during call | PAYMENT_UNCERTAIN → reconcile with the **same** key | PROVIDER_OUTCOME_UNKNOWN / HIGH | Reconcile; retry only via a new attempt after a confirmed decline | `crash/test_provider_timeout.py` |
 | 24 | Crash after provider success, before local commit | attempt step=confirm_sent on resume | retrieve → PROVIDER_CONFIRMED; no new call | CRASH_RECOVERY / LOW (audit only) | — | `crash/test_crash_points.py` |
-| 25 | Replay window passed (RazorpayX: past `idem_replay_window_h` = 24 h, set inside the documented 168 h key validity), lookup finds nothing | attempt age | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
+| 25 | Replay window passed (RazorpayX: past `idem_replay_window_h` = 24 h, the claimed 168 h key validity (UNVERIFIED: official source not yet checked)), lookup finds nothing | attempt age | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
 | 26 | Provider declines | explicit decline | FAILED → item HELD | PAYMENT_FAILED / MEDIUM | Fresh checks + a new approval (`approval_seq` n+1) → attempt n+1 linked to it | `integration/test_decline_then_retry.py` |
 | 27 | Provider confirmed, no statement yet | three-way | settlement PENDING / NOT_AVAILABLE | SETTLEMENT_UNCONFIRMED / LOW (non-blocking) | Wait for the statement | `unit/reconciliation/test_settlement.py` |
 | 28 | Duplicate debit on the statement | two debits ↔ one payment | Contain | DUPLICATE_DEBIT / CRITICAL + recovery case | Bank/provider investigation | `…::dup_debit` |
-| 29 | Returned / reversed payment | provider or statement status | Payment RETURNED; item back to HELD | PAYMENT_RETURNED / HIGH | New attempt only with fresh approval | `integration/test_returned_payment.py` |
+| 29 | Returned / reversed **after** confirmed success | provider status (or statement) | One txn: payment RETURNED / REVERSED; item PAID → HELD; REVERSAL journal entry; vendor contained. **No retry** in this build (a reversal *before* success is a decline, #26) | PAYMENT_RETURNED / CRITICAL + recovery case | Human-led recovery case | `integration/test_reversal_after_success.py` |
 | 30 | Approval stale (data/policy changed) | decision_hash mismatch | Refuse approval; recompute | STALE_APPROVAL / HIGH | New approval | `integration/test_stale_approval.py` |
-| 31 | Double approve | approval CAS | No-op with "already approved by X" (a new `approval_seq` is possible only after a provider-confirmed failure, #26/#29) | — | — | `integration/test_approvals.py::double` |
+| 31 | Double approve | approval CAS | No-op with "already approved by X" (a new `approval_seq` is possible only after a provider-confirmed decline before success, #26) | — | — | `integration/test_approvals.py::double` |
 | 32 | Override of a never-overridable flag | CLI | Refused | — | — | `integration/test_approvals.py::refused` |
 | 33 | Approver not in the allowlist | policy `approvers` | Refused | — | — | `integration/test_approvals.py::allowlist` |
 | 34 | Cost limit reached | BudgetPort.reserve | No more paid calls; the rest are HELD; run STOPPED_COST | RUN_LIMIT_REACHED / MEDIUM | Raise the limit; resume | `integration/test_limits.py::cost` |
@@ -90,6 +90,7 @@ Default tests use the FakeProvider and recorded fixtures/mocks; no external call
 | Restart discovers the existing payout | §3 resume table | SC-05; `crash/test_kill_loop.py` |
 | Duplicate execution for the same logical payment | 31, `payments.payment_key UNIQUE` | `integration/test_approvals.py::double`; kill loop asserts ≤ 1 success per key |
 | Retrieval returns the existing payout | §3 REF_SAVED / CONFIRM_SENT | `crash/test_crash_points.py` |
+| Reversal after confirmed success † | 29 | `integration/test_reversal_after_success.py`; SC-13 step 6 |
 | Retrieval cannot establish the outcome | 25, 47, 48 | `crash/test_expired_key_fails_closed.py` |
 | Website blocked / inaccessible | 50 | `unit/sources/test_webfetch.py::blocked` |
 | Empty or incomplete Crustdata response | 51 | `unit/sources/test_crustdata.py::empty` |
