@@ -20,7 +20,10 @@ from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-PAGE = HERE / "dashboard" / "index.html"
+STATIC = HERE / "dashboard"
+PAGES = {"/", "/payments", "/exceptions", "/approvals", "/books"}      # every page is the same shell; app.js picks the view
+ASSETS = {"/static/app.css": ("app.css", "text/css; charset=utf-8"),
+          "/static/app.js": ("app.js", "text/javascript; charset=utf-8")}
 sys.path.insert(0, str(REPO))  # so `python scripts/dashboard.py` can import the project's own definitions
 
 from paypilot.ledger.store import summarize  # noqa: E402  (cost: one definition of KNOWN / PARTIAL / UNKNOWN)
@@ -106,7 +109,7 @@ def build_state(db: Path, run_id: str | None) -> dict:
             a["decision_hash"] = a["decision_hash"][:12]
 
         audit = rows(con, "SELECT event_id, run_id, entity_type, entity_id, previous_state, new_state, actor, reason, ts "
-                          f"FROM audit_events {where} ORDER BY event_id DESC LIMIT 60", *args)
+                          f"FROM audit_events {where} ORDER BY event_id DESC LIMIT 200", *args)
 
         # cost: the ledger's own summary. A missing price is UNKNOWN, never 0 (hard rule 7).
         scope = [run_id] if run_id else [r["run_id"] for r in runs]
@@ -138,6 +141,15 @@ def build_state(db: Path, run_id: str | None) -> dict:
         def pstatus(i):
             return i["payment"]["status"] if i["payment"] else None
 
+        journal = rows(con, "SELECT entry_id, item_id, kind, vendor_id, memo, posted_at FROM journal_entries e "
+                            f"WHERE 1=1 {in_run} ORDER BY posted_at DESC LIMIT 100", *args)
+        lines = {}
+        for ln in rows(con, "SELECT entry_id, line_no, account, debit_paise, credit_paise FROM journal_lines ORDER BY entry_id, line_no"):
+            lines.setdefault(ln["entry_id"], []).append(ln)
+        for e in journal:
+            e["lines"] = lines.get(e["entry_id"], [])
+        providers = [r["provider"] for r in rows(con, "SELECT DISTINCT provider FROM payments")]
+
         counts = {
             "items": len(items),
             "paid": sum(1 for i in items if i["state"] == ItemState.PAID),
@@ -157,7 +169,8 @@ def build_state(db: Path, run_id: str | None) -> dict:
         return {"db": str(db), "runs": runs, "run_id": run_id, "counts": counts,
                 "money": {"paid_paise": paid, "held_paise": held, "returned_paise": returned},
                 "items": items, "exceptions": exceptions, "approvals": approvals, "audit": audit,
-                "cost": cost, "trial_balance": tb, "entries": entries}
+                "cost": cost, "trial_balance": tb, "entries": entries, "journal": journal,
+                "payment_providers": providers}
     finally:
         con.close()
 
@@ -174,8 +187,11 @@ def make_handler(db: Path):
 
         def do_GET(self):  # noqa: N802
             u = urlparse(self.path)
-            if u.path in ("/", "/index.html"):
-                return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            if u.path in PAGES:
+                return self._send(200, (STATIC / "app.html").read_bytes(), "text/html; charset=utf-8")
+            if u.path in ASSETS:                      # fixed allowlist: no user-controlled file paths
+                name, ctype = ASSETS[u.path]
+                return self._send(200, (STATIC / name).read_bytes(), ctype)
             if u.path == "/api/state":
                 run = (parse_qs(u.query).get("run") or [None])[0]
                 try:
