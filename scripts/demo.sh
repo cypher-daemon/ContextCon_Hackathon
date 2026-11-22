@@ -18,6 +18,7 @@ sub()   { sed -e 's/‹IFSC-A›/HDFC0000001/g; s/‹IFSC-B›/ICIC0000001/g; s/
 # ---- set up a clean demo root ----
 rm -rf .demo && mkdir -p .demo/clients/northbay .demo/scenarios
 cp config.yaml .demo/config.yaml
+[ -f .env ] && ln -s ../.env .demo/.env      # real keys (BANK_HMAC_KEY, RAZORPAYX_*) are picked up if present
 for f in clients/northbay/*; do
   case "$f" in *.csv|*.yaml) sub "$f" > ".demo/$f" ;; esac
 done
