@@ -107,7 +107,20 @@ def approve_item(con: sqlite3.Connection, *, item_id: str, reviewer: str, reason
     run = con.execute("SELECT run_id FROM items WHERE item_id=?", (item_id,)).fetchone()
     if run is None:
         raise ApprovalRefused("UNKNOWN_ITEM", f"no item {item_id}")
-    begin_recovery(con, run["run_id"], lambda: now, cfg, session_id)
+    # An already-approved request is idempotent and must not trigger recovery side effects
+    # (which can advance another pending payment) before returning its original approval.
+    existing = con.execute("SELECT state FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if existing and S(existing["state"]) in APPROVED_STATES:
+        prev = con.execute("SELECT * FROM approvals WHERE item_id=? AND status='APPROVED' ORDER BY approval_seq DESC, rowid DESC LIMIT 1",
+                           (item_id,)).fetchone()
+        if prev is not None:
+            pay = con.execute("SELECT payment_id FROM payments WHERE item_id=?", (item_id,)).fetchone()
+            return ApprovalResult("ALREADY_APPROVED", _approval(prev), pay["payment_id"] if pay else None)
+    begin_recovery(con, run["run_id"], lambda: now, cfg, session_id, include_created=False)
+    unresolved = con.execute("SELECT payment_key FROM payments WHERE item_id IN (SELECT item_id FROM items WHERE run_id=?) "
+                             "AND status='PAYMENT_UNCERTAIN' ORDER BY created_at LIMIT 1", (run["run_id"],)).fetchone()
+    if unresolved:
+        raise ApprovalRefused("PAYMENT_UNCERTAIN", f"payment {unresolved['payment_key']} may have reached the provider; reconcile it before approving anything else")
     with tx(con):
         row = con.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
         if row is None:

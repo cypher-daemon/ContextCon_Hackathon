@@ -49,7 +49,7 @@ def test_run_prints_table_writes_outputs_and_exits_0(world):
     lines = [json.loads(l) for l in (out / "results.jsonl").read_text().splitlines()]
     assert len(lines) == 5 and all(list(l) == fields for l in lines)                      # field order = output.fields
     assert json.loads((out / "summary.json").read_text())["counts"] == {"POSTED": 2, "CANNOT_VERIFY": 2, "HELD": 1}
-    md = (out / "report.md").read_text()
+    md = (out / "report.md").read_text(encoding="utf-8")
     assert "₹1,740.00" in md and "no money moved" in md and "Cost:" in md
     tb = list(csv_rows(out / "trial_balance.csv")); assert sum(int(r[1]) for r in tb[1:]) == 0
 

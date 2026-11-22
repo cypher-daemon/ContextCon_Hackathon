@@ -19,13 +19,21 @@ from paypilot.schemas import Payment, RunConfig
 
 
 def reconcile_run(con: sqlite3.Connection, run_id: str, cfg: RunConfig, clock: Callable[[], datetime], session_id: str = "recovery",
-                  provider=None) -> list[str]:
+                  provider=None, *, include_created: bool = True) -> list[str]:
     """Returns the payment_ids it looked at."""
     rows = con.execute("SELECT p.payment_id, p.provider FROM payments p JOIN items i ON i.item_id=p.item_id WHERE i.run_id=? "
                        "ORDER BY p.created_at, p.payment_id", (run_id,)).fetchall()
     cache: dict[str, object] = {}
     seen: list[str] = []
     for r in rows:
+        if not include_created:
+            current = con.execute("SELECT status, current_attempt FROM payments WHERE payment_id=?", (r["payment_id"],)).fetchone()
+            attempt = con.execute("SELECT step FROM payment_attempts WHERE payment_id=? AND attempt_no=?",
+                                  (r["payment_id"], current["current_attempt"])).fetchone()
+            # Approval recovery resolves only work that could already have reached the provider.
+            # A queued NONE/CREATED attempt is left for run/resume (or inline execution).
+            if current["status"] == "CREATED" and attempt and attempt["step"] == "NONE":
+                continue
         prov = provider or cache.setdefault(r["provider"], build_provider(r["provider"], cfg))
         _advance(_Ctx(con, prov, cfg, clock, session_id), r["payment_id"])
         seen.append(r["payment_id"])

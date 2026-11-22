@@ -152,8 +152,8 @@ def load_items(request: Request, ctx: StageContext) -> list[BankLine | Invoice |
     key = bank_hmac_key() if any(k in ("invoices", "vendor_messages") for k in request.inputs) else ""
     out: list[BankLine | Invoice | VendorMessage | ParseFailure] = []
     for input_key, fname in request.inputs.items():
-        if input_key == "bank_statement" and request.operation is not Operation.RECONCILE:
-            continue                      # a statement is only a work item in a RECONCILE run (each line is reconciled)
+        if input_key == "bank_statement":
+            continue                      # statement lines are loaded separately by load_statement, never as work items
         for row_no, rec in enumerate(_read_rows(safe_input_path(base, fname)), start=1):
             iid = ids.item_id(request.client_id, request.source_sha, fname, row_no)
             if not isinstance(rec, dict):

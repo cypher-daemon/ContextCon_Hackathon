@@ -251,6 +251,8 @@ def _advance(c: _Ctx, payment_id: str) -> None:
             pay, att, item = _rows(c.con, payment_id)
             step = "REF_SAVED"
         if step in ("REF_SAVED", "CONFIRM_SENT"):
+            if not att["provider_ref"]:
+                return _uncertain(c, pay, att, item, "attempt step requires a provider reference, but none was persisted")
             # The provider reference is already known, so a failed READ-ONLY lookup is NOT an unknown outcome: the state stays as it is
             # and the next run / resume simply asks again. A timeout in `confirm` (a money-moving call) is different: it falls through
             # to the handler below and becomes PAYMENT_UNCERTAIN. Only a failed create or confirm is ever uncertain.

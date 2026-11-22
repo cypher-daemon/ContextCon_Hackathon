@@ -1,10 +1,14 @@
-"""Single-writer process lock (fcntl). Owner: lane A. A second process is refused (CLI exit 3) or waits `lock_wait_s`."""
+"""Cross-platform single-writer process lock. A second process is refused or waits `lock_wait_s`."""
 from __future__ import annotations
 
-import fcntl
 import os
 import time
 from pathlib import Path
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 EXIT_LOCK_HELD = 3
 
@@ -23,7 +27,11 @@ class RunLock:
         deadline = time.monotonic() + self.wait_s
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError:
                 if time.monotonic() >= deadline:
@@ -31,13 +39,18 @@ class RunLock:
                     raise LockHeld(f"another paypilot process holds {self.path}") from None
                 time.sleep(0.05)
         os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, str(os.getpid()).encode())
         self._fd = fd
         return self
 
     def release(self) -> None:
         if self._fd is not None:          # kernel also drops the lock if we are killed (-9), so no stale locks
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            if os.name == "nt":
+                os.lseek(self._fd, 0, os.SEEK_SET)
+                msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
             os.close(self._fd)
             self._fd = None
 

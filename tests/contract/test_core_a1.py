@@ -1,5 +1,6 @@
 """A1 done-when: hashes stable; lock refuses a 2nd process; JSONL masks accounts; audit is atomic."""
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -120,7 +121,8 @@ def test_log_masks_separated_int_and_glued_accounts(tmp_path):
     rec = json.loads((tmp_path / "paypilot.jsonl").read_text())
     assert rec["a"] == "****9012" and rec["b"] == "****9012" and rec["c"].endswith("****9012")
     assert rec["fp"] == fp and rec["my_token"] == "[REDACTED]" and rec["amount"] == 4200
-    assert (tmp_path / "paypilot.jsonl").stat().st_mode & 0o077 == 0
+    if os.name != "nt":  # POSIX mode bits; Windows uses inherited ACLs and exposes no equivalent via st_mode.
+        assert (tmp_path / "paypilot.jsonl").stat().st_mode & 0o077 == 0
 
 
 def test_client_may_set_approver_allowlist_only():

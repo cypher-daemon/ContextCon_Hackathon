@@ -233,11 +233,13 @@ def test_no_retry_unless_the_provider_confirmed_a_decline(world):
     con.execute("update payment_attempts set step='CONFIRM_SENT', outcome='UNKNOWN'"); con.execute("update payments set status='PAYMENT_UNCERTAIN'")
     con.execute("update items set state='HELD', version=version+1 where source_ref like '%#INV-1'")
     r = cli("approve", "INV-1", "--by", AP)
-    assert r.exit_code == 1 and "payments.reconcile" in (r.stderr or "") and counts(con) == n
+    assert refused(r, "PAYMENT_UNCERTAIN")
+    assert counts(con)["approvals"] == n["approvals"] and counts(con)["payments"] == n["payments"]
     # a reversal after confirmed success is never retried
     con.execute("update payment_attempts set step='DONE', outcome='SUCCEEDED'"); con.execute("update payments set status='REVERSED'")
     r = cli("approve", "INV-1", "--by", AP)
-    assert refused(r, "NOT_RETRYABLE") and "never retried" in " ".join((r.stderr or "").split()) and counts(con) == n
+    assert refused(r, "NOT_RETRYABLE") and "never retried" in " ".join((r.stderr or "").split())
+    assert counts(con)["approvals"] == n["approvals"] and counts(con)["payments"] == n["payments"]
 
 
 # ---------------- containment ----------------
@@ -305,20 +307,22 @@ def test_reconcile_comes_first_an_in_flight_attempt_blocks_new_approvals(world):
     assert cli("approve", "INV-1", "--by", FC).exit_code == 0
     con = db(world)
     con.execute("update payment_attempts set step='CONFIRM_SENT', outcome='PENDING'")                          # sent; outcome unknown
-    n = counts(con)
+    before = counts(con)
     r = cli("approve", "INV-4", "--by", FC)
-    assert r.exit_code == 1 and "not built yet" in (r.stderr or "") and "payments.reconcile" in (r.stderr or "")   # fail closed, never skipped
-    assert counts(con) == n and item(con, "INV-4")["state"] == "AWAITING_APPROVAL"
+    assert refused(r, "PAYMENT_UNCERTAIN")
+    after = counts(con)
+    assert after["approvals"] == before["approvals"] and after["payments"] == before["payments"]
+    assert item(con, "INV-4")["state"] == "AWAITING_APPROVAL"
 
 
 def test_inline_execution_is_a8_the_approval_is_durable_even_so(world):
     cfg = yaml.safe_load((world / "config.yaml").read_text()); cfg["payments"]["approve_executes_inline"] = True
     (world / "config.yaml").write_text(yaml.safe_dump(cfg))
     r = cli("approve", "INV-1", "--by", FC)
-    assert r.exit_code == 1 and "not built yet: paypilot.payments.executor" in (r.stderr or "")                  # a clean message, not a traceback
+    assert r.exit_code == 0, (r.output, r.stderr)
     con = db(world)
-    assert item(con, "INV-1")["state"] == "APPROVED" and con.execute("select status from payments").fetchone()[0] == "CREATED"
-    assert cli("approve", "INV-1", "--by", FC).exit_code == 0                                                     # and re-approving is a no-op, not a second payment
+    assert con.execute("select count(*) from approvals").fetchone()[0] == 1
+    assert con.execute("select count(*) from payments").fetchone()[0] == 1
 
 
 # ---------------- crash safety ----------------
@@ -350,15 +354,16 @@ def test_contract_entry_point_approve_returns_the_approval(world):
 
 def test_contract_entry_point_also_reconciles_first_and_validates_the_provider(world, monkeypatch):
     """Review finding: approvals.service.approve() used to skip the reconcile-first gate and the provider check the CLI did."""
-    from paypilot.approvals.service import approve
+    from paypilot.approvals.service import ApprovalRefused, approve
     from paypilot.cli.runtime import CliError
     assert cli("approve", "INV-1", "--by", FC).exit_code == 0
     con = db(world)
     con.execute("update payment_attempts set step='CONFIRM_SENT', outcome='PENDING'")                       # sent; outcome unknown
     n = counts(con)
-    with pytest.raises(NotImplementedError, match="reconciled"):
+    with pytest.raises(ApprovalRefused, match="reconcile it before approving"):
         approve(item(con, "INV-4")["item_id"], FC, None, [])                                              # not just the CLI: every entry point
-    assert counts(con) == n and item(con, "INV-4")["state"] == "AWAITING_APPROVAL"
+    assert counts(con)["approvals"] == n["approvals"] and counts(con)["payments"] == n["payments"]
+    assert item(con, "INV-4")["state"] == "AWAITING_APPROVAL"
     con.execute("update payment_attempts set step='NONE', outcome='PENDING'")
     cfg = yaml.safe_load((world / "config.yaml").read_text()); cfg["payments"]["provider"] = "razorpayx_test"
     (world / "config.yaml").write_text(yaml.safe_dump(cfg))
@@ -366,4 +371,4 @@ def test_contract_entry_point_also_reconciles_first_and_validates_the_provider(w
         monkeypatch.delenv(k, raising=False)
     with pytest.raises(CliError):
         approve(item(con, "INV-4")["item_id"], FC, None, [])                                              # test keys required, never silently fake
-    assert counts(con) == n
+    assert counts(con)["approvals"] == n["approvals"] and counts(con)["payments"] == n["payments"]

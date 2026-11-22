@@ -4,7 +4,7 @@
 >
 > **Priorities:** correct bookkeeping → vendor resolution and evidence → duplicate and fraud detection → exceptions and approvals → crash-safe state → reconciliation → audit report and CLI demo. A **RazorpayX Payouts test-mode** adapter (vendor payouts, not card charges) is P0 *if* test access is verified (TASKS A9); the FakeProvider stays the deterministic test target. **The payment provider is an implementation detail behind an interface.**
 >
-> **Status:** final design, planning phase. No code yet. Exact contracts are in [`INTERFACES.md`](INTERFACES.md), failure behaviour in [`FAILURE_MODES.md`](FAILURE_MODES.md), the demo world in [`SCENARIOS.md`](SCENARIOS.md).
+> **Status:** architecture and contracts describe the intended system; this repository has a substantial prototype implementation. It is not yet a verified acceptance or production build. Current implementation gaps and verification limits are tracked in [`../TECHNICAL.md`](../TECHNICAL.md). Exact contracts are in [`INTERFACES.md`](INTERFACES.md), failure behaviour in [`FAILURE_MODES.md`](FAILURE_MODES.md), and scenario requirements in [`SCENARIOS.md`](SCENARIOS.md).
 > **Precedence:** `HACKATHON_INFORMATION.md` Part A (binding rules) > `docs/DECISIONS.md` > this file > the other docs. Earlier drafts are in git history only.
 
 ---
