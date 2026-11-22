@@ -138,7 +138,7 @@ def make_ctx(*, policy: Any = None, data: ClientData | None = None, ext: Any = N
              cfg: RunConfig | None = None, client_id: str = "northbay") -> StageContext:
     """A StageContext made of fakes. Pass lane C's real PolicyConfig as `policy` once it exists."""
     cfg = cfg or RunConfig(limits={}, payments={}, approvals={}, costs={}, output={}, logging={}, storage={})
-    policy = policy or SimpleNamespace(decision_hash_input="test-policy-hash")
+    policy = policy or SimpleNamespace(decision_hash_input="test-policy-hash", normalize=None)
     data = data or ClientData(client_id=client_id, vendors=[])
     return StageContext(run_id="R-test", session_id="S-test", client_id=client_id, operation=operation, period=period,
                         cfg=cfg, policy=policy, data=data, ext=ext or FakeExtClient(), history=history or FakeHistory(),

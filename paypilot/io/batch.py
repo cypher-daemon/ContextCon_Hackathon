@@ -95,7 +95,7 @@ def _parse_bank_line(r: _Row, item_id: str, ref: str, ctx: StageContext) -> Bank
     bank_ref = r.s("bank_reference")
     if r.errors:
         return None
-    dkey = _norm.descriptor_key(desc, ctx.policy)
+    dkey = _norm.descriptor_key(desc, ctx.policy.normalize)
     return BankLine(item_id=item_id, source_ref=ref, line_id=line_id, date=d, descriptor_raw=desc, descriptor_key=dkey,
                     amount_paise=amt, currency=cur.upper(), direction=direction, bank_reference=bank_ref,
                     transaction_fingerprint=ids.txn_fingerprint_bank_line(
@@ -112,13 +112,13 @@ def _parse_invoice(r: _Row, item_id: str, ref: str, ctx: StageContext, key: str)
     ifsc, docref = r.s("remit_ifsc"), r.s("document_ref")
     if r.errors:
         return None
-    canon = _norm.invoice_canonical(inv_no, ctx.policy) if inv_no else None
+    canon = _norm.invoice_canonical(inv_no, ctx.policy.normalize) if inv_no else None
     return Invoice(item_id=item_id, source_ref=ref, invoice_id=inv_id, vendor_name_raw=name, gstin=gstin,
                    domain=dom.lower() if dom else None, invoice_no_raw=inv_no, invoice_no_canonical=canon,
                    invoice_date=inv_date, due_date=due, amount_paise=amt, currency=(cur or "INR").upper(),
                    po_number=po, qty=qty, account_fingerprint=fp, account_last4=last4,
                    ifsc=ifsc.upper() if ifsc else None, document_ref=docref,
-                   transaction_fingerprint=ids.txn_fingerprint_invoice(_norm.name_key(name, ctx.policy), canon))
+                   transaction_fingerprint=ids.txn_fingerprint_invoice(_norm.name_key(name, ctx.policy.normalize), canon))
 
 
 def _parse_message(r: _Row, item_id: str, ref: str, ctx: StageContext, key: str) -> VendorMessage | None:

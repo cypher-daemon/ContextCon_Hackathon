@@ -95,7 +95,7 @@ def load_client_data(client_id: str, cfg: RunConfig) -> tuple[ClientData, str]:
     for r in vrows:
         fp, last4 = fingerprint(r["bank_account"], key)       # raw number dropped right here
         vendors.append(Vendor(
-            vendor_id=r["vendor_id"], legal_name=r["legal_name"], name_key=_norm.name_key(r["legal_name"], policy),
+            vendor_id=r["vendor_id"], legal_name=r["legal_name"], name_key=_norm.name_key(r["legal_name"], policy.normalize),
             aliases=[a.strip() for a in r["aliases"].split("|") if a.strip()], cin=_opt(r["cin"]), gstin=_opt(r["gstin"]),
             domain=_opt(r["domain"].lower()), account_fingerprint=fp, account_last4=last4,
             ifsc=_opt(r["ifsc"].upper()), default_account=_opt(r["default_account"]), category=_opt(r["category"]),
@@ -121,7 +121,7 @@ def load_client_data(client_id: str, cfg: RunConfig) -> tuple[ClientData, str]:
         try:
             history = [HistoryRecord(
                 ref=r["ref"], vendor_id=_opt(r["vendor_id"]),
-                invoice_no_canonical=_norm.invoice_canonical(r["invoice_number"], policy) if r["invoice_number"] else None,
+                invoice_no_canonical=_norm.invoice_canonical(r["invoice_number"], policy.normalize) if r["invoice_number"] else None,
                 amount_paise=parse_amount_paise(r["amount_inr"]), currency=r["currency"].upper() or "INR",
                 paid_on=_date(r["paid_on"], r["ref"]), provider_ref=_opt(r["provider_ref"]),
                 bank_reference=_opt(r["bank_reference"]), status=r["status"],

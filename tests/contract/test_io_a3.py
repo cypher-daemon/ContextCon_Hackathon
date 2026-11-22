@@ -180,3 +180,16 @@ def test_client_data_errors(tmp_path):
     client(tmp_path, "V1,A,,,,,,,,,\nV1,B,,,,,,,,,\n")
     with pytest.raises(ClientDataError):
         load_client_data("northbay", NOW_CFG)                                   # duplicate vendor_id
+
+
+def test_normalizers_receive_the_normalize_section_not_the_whole_policy(tmp_path, monkeypatch):
+    """Lane B's normalizers read processor_prefixes/city_tokens off the object they get; a wrong object silently yields []."""
+    from paypilot.core.config import load_config
+    from paypilot.policy_config import NormalizePolicy
+    seen = []
+    monkeypatch.setattr(normalize, "descriptor_key", lambda s, p: seen.append(p) or s.upper())
+    _, policy, _ = load_config("northbay", root=ROOT)
+    write(tmp_path / "s" / "bank_lines.json", [{"line_id": "B", "date": "2026-10-01", "description": "x", "amount_inr": "1.00",
+                                                "direction": "DEBIT", "currency": "INR"}])
+    batch.load_items(req(tmp_path, {"bank_lines": "bank_lines.json"}), make_ctx(policy=policy))
+    assert seen and all(isinstance(p, NormalizePolicy) for p in seen)
