@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from paypilot.io import batch, client_data
+from paypilot.io import batch
 from paypilot.io.client_data import ClientDataError, load_client_data
 from paypilot.io.money import parse_amount_paise
 from paypilot.io.request import RequestError, load_request

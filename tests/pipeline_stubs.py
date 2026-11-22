@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 from paypilot.core import ids, pipeline
@@ -13,7 +13,7 @@ from paypilot.core.db import connect
 from paypilot.io import batch
 from paypilot.io.request import load_request
 from paypilot.resolve import normalize
-from paypilot.schemas import (BankLine, CheckResult, CheckStatus, ClientData, DateBasis, Decision, ExceptionDraft, Facts, Invoice,
+from paypilot.schemas import (BankLine, CheckResult, CheckStatus, ClientData, DateBasis, Decision, ExceptionDraft, Facts,
                               Proposal, Reason, Resolution, Severity, Source, Vendor)
 from tests.fakes import FakeExtClient, FakeHistory, fixed_clock
 

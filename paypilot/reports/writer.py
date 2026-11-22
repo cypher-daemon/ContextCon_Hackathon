@@ -170,7 +170,7 @@ def _report_md(con: sqlite3.Connection, run_id: str, views: list[ItemView], summ
            f"- Awaiting approval: {fmt_inr(awaiting)}",
            "- Items flagged, by type: " + (", ".join(f"{k} {n}" for k, n in sorted(flags.items())) or "none"),
            "- Open exceptions by severity: " + (", ".join(f"{k} {n}" for k, n in sorted(summary.open_exceptions.items())) or "none"),
-           f"- Oldest open exception: " + (f"{oldest['type']} ({oldest['created_at']})" if oldest else "none"),
+           "- Oldest open exception: " + (f"{oldest['type']} ({oldest['created_at']})" if oldest else "none"),
            f"- Crash recoveries: {crashes}", f"- Cost: {cost_line}", "", "## Items", ""]
     out += [_sentence(v) for v in views] or ["- no items"]
     return "\n".join(out) + "\n"
@@ -221,4 +221,7 @@ def write_run_outputs(con: sqlite3.Connection, run_id: str, cfg: RunConfig, *, n
 def write_outputs(run_id: str, ctx: StageContext) -> list[Path]:
     """Contract entry point (INTERFACES §9): regenerate every output file for a run from DB state."""
     con = connect(ctx.cfg.storage["db_path"])
-    return write_run_outputs(con, run_id, ctx.cfg, now=ctx.clock(), session_id=ctx.session_id, operation=ctx.operation)
+    try:
+        return write_run_outputs(con, run_id, ctx.cfg, now=ctx.clock(), session_id=ctx.session_id, operation=ctx.operation)
+    finally:
+        con.close()

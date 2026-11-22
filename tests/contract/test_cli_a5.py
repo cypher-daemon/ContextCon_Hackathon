@@ -197,3 +197,38 @@ def test_read_commands_on_an_empty_world_are_clean_errors_not_crashes(world):
         r = cli(*args)
         assert r.exit_code == 2, (args, r.output)
         assert "Traceback" not in r.output
+
+
+def test_unbuilt_lane_module_is_a_clean_message_naming_the_lane(capsys):
+    from paypilot.cli import runtime as rt
+    for path, lane in (("checks/zzz", "C"), ("resolve/zzz", "B"), ("sources/zzz", "B"), ("core/zzz", "A")):
+        ns: dict = {}
+        exec(compile("def f():\n    raise NotImplementedError('stub')", f"/x/paypilot/{path}.py", "exec"), ns)
+        with pytest.raises(SystemExit) as e:
+            with rt.guarded():
+                ns["f"]()
+        err = capsys.readouterr().err
+        assert e.value.code == 1 and f"(lane {lane})" in err and f"paypilot.{path.replace('/', '.')}" in err
+        assert "Traceback" not in err and "resume" in err
+
+
+def test_stage_not_built_exits_1_records_it_and_resume_finishes_once_it_is(world, monkeypatch):
+    from paypilot.core import pipeline
+    real = pipeline.decide
+    built = {"yes": False}
+
+    def decide_maybe(item, res, checks, policy):
+        if not built["yes"]:
+            raise NotImplementedError("decide.engine is a stub")
+        return real(item, res, checks, policy)
+    monkeypatch.setattr(pipeline, "decide", decide_maybe)
+    r = cli("run", "--scenario", str(world / "scenarios/S1"))
+    assert r.exit_code == 1 and "not built yet" in (r.stderr or r.output) and "Traceback" not in (r.stderr or "") + r.output
+    con = connect(str(world / "var/paypilot.db"))
+    s = con.execute("select ended_at, exit_code from sessions").fetchone()
+    assert s["ended_at"] is not None and s["exit_code"] == 1                    # not recorded as a clean exit, and not as a crash
+    assert not (world / "out").exists()                                         # no half-baked outputs
+    built["yes"] = True                                                         # the lane lands
+    r = cli("resume")
+    assert r.exit_code == 0 and {x[0] for x in con.execute("select outcome from items")} == {"POSTED", "CANNOT_VERIFY", "HELD"}
+    assert con.execute("select count(*) from journal_entries").fetchone()[0] == 2

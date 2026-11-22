@@ -245,13 +245,16 @@ def drive(run_id: str, ctx: StageContext, provider: PaymentProvider) -> RunSumma
     """Advance every item of the run as far as the pipeline goes (to POSTED / AWAITING_APPROVAL / HELD / CANNOT_VERIFY).
     `provider` is unused here: payments start at approval (A7/A8)."""
     con = connect(ctx.cfg.storage["db_path"])
-    ctx = dataclasses.replace(ctx, history=SqliteHistory(con, ctx.data, ctx.client_id, run_id))
-    if ctx.operation is not None:     # missing/unsupported operation: run-level CANNOT_VERIFY result, built in A13
-        for r in con.execute("SELECT item_id FROM items WHERE run_id=? ORDER BY COALESCE(item_date,''), input_name, row_no",
-                             (run_id,)).fetchall():
-            while _advance_one(con, ctx, r["item_id"]):
-                pass
-    with tx(con):
-        con.execute("UPDATE runs SET status=?, updated_at=? WHERE run_id=?",
-                    (RunStatus.COMPLETE.value, ctx.clock().isoformat(), run_id))
-    return build_summary(con, run_id, ctx)
+    try:
+        ctx = dataclasses.replace(ctx, history=SqliteHistory(con, ctx.data, ctx.client_id, run_id))
+        if ctx.operation is not None:     # missing/unsupported operation: run-level CANNOT_VERIFY result, built in A13
+            for r in con.execute("SELECT item_id FROM items WHERE run_id=? ORDER BY COALESCE(item_date,''), input_name, row_no",
+                                 (run_id,)).fetchall():
+                while _advance_one(con, ctx, r["item_id"]):
+                    pass
+        with tx(con):
+            con.execute("UPDATE runs SET status=?, updated_at=? WHERE run_id=?",
+                        (RunStatus.COMPLETE.value, ctx.clock().isoformat(), run_id))
+        return build_summary(con, run_id, ctx)
+    finally:
+        con.close()

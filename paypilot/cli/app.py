@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import shutil
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -21,7 +22,7 @@ from paypilot.cli import runtime as rt
 from paypilot.cli.selector import resolve_item, resolve_run
 from paypilot.context import StageContext
 from paypilot.core import pipeline
-from paypilot.core.db import connect, tx
+from paypilot.core.db import connect
 from paypilot.core.lock import RunLock
 from paypilot.core.null_ext import NullExtClient
 from paypilot.io import batch
@@ -100,7 +101,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
         provider: Optional[str] = typer.Option(None, "--provider", help="fake | razorpayx_test")) -> None:
     """Run a request. The same request file is the same run (resume semantics)."""
     code = rt.EXIT_OK
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         if (scenario is None) == (request is None):
             raise rt.CliError("give exactly one of --scenario DIR or --request PATH")
@@ -110,7 +111,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
         provider_name = rt.check_provider(provider, loaded.cfg)
         console.print(f"Payment provider: {'FakeProvider (no real money)' if provider_name == 'fake' else 'RazorpayX TEST MODE (no real money)'}")
         with RunLock(loaded.cfg.storage["lock_path"], wait_s=0):
-            con = connect(loaded.cfg.storage["db_path"])
+            con = stack.enter_context(closing(connect(loaded.cfg.storage["db_path"])))
             ctx0 = _ctx(loaded, "", "", req.client_id, req.operation, req.period)
             items = batch.load_items(req, ctx0)
             snapshot = {**loaded.snapshot, "_request": {"period": req.period.model_dump(mode="json", by_alias=True) if req.period else None,
@@ -119,6 +120,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
             run_id, created = pipeline.ingest_run(con, request=req, cfg=loaded.cfg, snapshot=snapshot, data_hash=loaded.data_hash,
                                                   items=items, now=rt.utcnow())
             sid = pipeline.open_session(con, run_id, "run", rt.utcnow())
+            code = rt.EXIT_FAILED         # stays 1 if anything below raises; a crash must not be recorded as a clean exit
             try:
                 rt.begin_recovery(con, run_id)
                 ctx = dataclasses.replace(ctx0, run_id=run_id, session_id=sid)
@@ -136,11 +138,11 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
 def resume(run_id: Optional[str] = _RUN_OPT) -> None:
     """Continue a run from its persisted state (after a crash, a stop, or new data)."""
     code = rt.EXIT_OK
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         paths = rt.storage_paths(root)
         with RunLock(paths["lock_path"], wait_s=0):
-            con = connect(paths["db_path"])
+            con = stack.enter_context(closing(connect(paths["db_path"])))
             run_id = resolve_run(con, run_id)
             run = con.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
             loaded = rt.load_all(run["client_id"], root)
@@ -148,6 +150,7 @@ def resume(run_id: Optional[str] = _RUN_OPT) -> None:
             period = Period(**req["period"]) if req.get("period") else None
             operation = Operation(run["operation"]) if run["operation"] else None
             sid = pipeline.open_session(con, run_id, "resume", rt.utcnow())
+            code = rt.EXIT_FAILED
             try:
                 rt.begin_recovery(con, run_id)
                 summary = _finish(con, _ctx(loaded, run_id, sid, run["client_id"], operation, period), run_id)
@@ -163,10 +166,10 @@ def report(run_id: Optional[str] = _RUN_OPT,
            as_json: bool = typer.Option(False, "--json", help="Print the run summary as JSON."),
            out: Optional[Path] = typer.Option(None, "--out", help="Write the output files here instead of out/<run_id>/.")) -> None:
     """Regenerate every output file for a run from the database, and show the summary."""
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         paths = rt.storage_paths(root)
-        con = rt.open_existing_db(root)
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
         run_id = resolve_run(con, run_id)
         client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
         cfg, _, _ = rt.load_cfg(client_id, root)
@@ -190,9 +193,9 @@ def _j(text):
 def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoice_id / line_id / message_id in the run."),
          run_id: Optional[str] = _RUN_OPT) -> None:
     """Why this item got its outcome: decision, rules, flags, checks, evidence, audit timeline, exceptions, payment."""
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
-        con = rt.open_existing_db(root)
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
         run_id = resolve_run(con, run_id)
         row = resolve_item(con, run_id, item)
         d, res, checks = _j(row["decision_json"]), _j(row["resolution_json"]), _j(row["checks_json"]) or []
@@ -250,9 +253,9 @@ def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoic
 @app.command()
 def ledger(run_id: Optional[str] = _RUN_OPT, as_json: bool = typer.Option(False, "--json", help="Print the ledger summary as JSON.")) -> None:
     """Every external call and what it cost: KNOWN / PARTIAL / UNKNOWN, ₹ per item, cache hits, UNCONFIRMED calls."""
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
-        con = rt.open_existing_db(root)
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
         run_id = resolve_run(con, run_id)
         client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
         cfg, _, _ = rt.load_cfg(client_id, root)

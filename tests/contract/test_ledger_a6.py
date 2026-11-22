@@ -1,5 +1,5 @@
 """A6 done-when: the cost-limit test stops safely. Ledger rows are written BEFORE calls; an unknown price is UNKNOWN, never 0."""
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 import pytest
 

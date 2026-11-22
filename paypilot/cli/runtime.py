@@ -23,7 +23,7 @@ from paypilot.policy_config import PolicyConfig
 from paypilot.reports.writer import UnknownOutputField
 from paypilot.schemas import ClientData, RunConfig
 
-EXIT_OK, EXIT_INVALID, EXIT_LOCK, EXIT_PERSIST, EXIT_LIMIT = 0, 2, 3, 70, 75
+EXIT_OK, EXIT_FAILED, EXIT_INVALID, EXIT_LOCK, EXIT_PERSIST, EXIT_LIMIT = 0, 1, 2, 3, 70, 75
 PROVIDERS = ("fake", "razorpayx_test")
 
 
@@ -39,20 +39,42 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_LANES = {"resolve": "B", "sources": "B", "checks": "C", "decide": "C", "exceptions": "C", "reconciliation": "C",
+          "flags": "C", "policy_config": "C"}
+
+
+def _unbuilt_module(tb) -> tuple[str, str]:
+    """(module, lane) of the innermost paypilot frame, so the message names what is not built yet."""
+    import traceback
+    mod = "paypilot"
+    for f in traceback.extract_tb(tb):
+        if f.filename.replace("\\", "/").find("/paypilot/") >= 0:
+            mod = f.filename.replace("\\", "/").split("/paypilot/")[-1].removesuffix(".py").replace("/", ".")
+    return "paypilot." + mod, _LANES.get(mod.split(".")[0], "A")
+
+
 @contextlib.contextmanager
-def guarded() -> Iterator[None]:
-    """Map domain errors to the documented exit codes; nothing here ever hides a failure."""
-    try:
-        yield
-    except (CliError, ConfigError, RequestError, ClientDataError, SelectorError, UnknownOutputField, ValueError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_INVALID)
-    except LockHeld as e:
-        print(f"error: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_LOCK)
-    except PersistenceFailure as e:
-        print(f"error: persistence failure, stopped before any provider call: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_PERSIST)
+def guarded() -> Iterator[contextlib.ExitStack]:
+    """Map domain errors to the documented exit codes; nothing here ever hides a failure.
+    Yields an ExitStack: register database connections on it and they are closed however the command ends."""
+    with contextlib.ExitStack() as stack:
+        try:
+            yield stack
+        except (CliError, ConfigError, RequestError, ClientDataError, SelectorError, UnknownOutputField, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_INVALID)
+        except NotImplementedError as e:        # a lane's module is still a stub: say which one, not a traceback
+            module, lane = _unbuilt_module(e.__traceback__)
+            print(f"error: not built yet: {module} (lane {lane}): {e or 'NotImplementedError'}\n"
+                  f"       nothing was lost: the run is saved and `python -m paypilot resume` continues it once the module lands.",
+                  file=sys.stderr)
+            raise SystemExit(EXIT_FAILED)
+        except LockHeld as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_LOCK)
+        except PersistenceFailure as e:
+            print(f"error: persistence failure, stopped before any provider call: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_PERSIST)
 
 
 def start() -> Path:
