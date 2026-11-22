@@ -5,8 +5,8 @@ import pytest
 from paypilot.core.config import load_config
 from paypilot.core.db import connect, tx
 from paypilot.ledger.budget import Budget
-from paypilot.ledger.cache import SqliteCache
-from paypilot.ledger.store import SqliteLedger, summarize
+from paypilot.ledger.store import summarize
+from paypilot.ledger.wiring import make_ports
 from paypilot.sources import http as b_http
 from paypilot.sources.http import make_ext_client
 from tests.fakes import fixed_clock
@@ -32,16 +32,15 @@ def net(monkeypatch):
     return n
 
 
-def build(tmp_path, *, inr_per_credit=None, max_cost=None, estimate=0.2, db="x.db", prior=None):
+def build(tmp_path, *, inr_per_credit=None, max_cost=None, max_per_item=None, estimate=0.2, db="x.db"):
     con = connect(str(tmp_path / db))
     with tx(con):
         con.execute("INSERT OR IGNORE INTO runs VALUES ('R','northbay','r','s',NULL,'h','p','d','{}','RUNNING','t','t')")
     cfg, _, _ = load_config("northbay")
     costs = {**cfg.costs, "crustdata": {"inr_per_credit": inr_per_credit, "estimates": {"identify": estimate, "web_fetch": 1}}}
-    cfg = cfg.model_copy(update={"costs": costs, "limits": {**cfg.limits, "max_cost_inr": max_cost}})
-    ledger = SqliteLedger(con, fixed_clock, run_id="R", session_id="S1", costs=costs)
-    budget = Budget(con, "R", cfg_limits=cfg.limits, unknown_reserve_inr=cfg.costs["unknown_reserve_inr"])
-    return con, cfg, ledger, make_ext_client(cfg, ledger, SqliteCache(con, fixed_clock), budget)
+    cfg = cfg.model_copy(update={"costs": costs, "limits": {**cfg.limits, "max_cost_inr": max_cost, "max_cost_inr_per_item": max_per_item}})
+    ledger, cache, budget = make_ports(con, run_id="R", session_id="S1", cfg=cfg, clock=fixed_clock)     # the CLI's own wiring
+    return con, cfg, ledger, make_ext_client(cfg, ledger, cache, budget)
 
 
 def test_rows_land_in_the_real_run_and_are_priced_from_config(tmp_path, net):
@@ -106,3 +105,19 @@ def test_kill_then_retry_of_the_same_request_does_not_collide(tmp_path, net):
     assert sorted(x["status"] for x in con2.execute("select status from cost_ledger")) == ["CONFIRMED", "UNCONFIRMED"]
     s = summarize(con2, "R")
     assert (s.total_inr, s.unconfirmed_inr, s.calls) == (0.2, 0.2, 2)             # both calls visible; the lost one still counts
+
+
+def test_per_item_limit_is_enforced_through_the_real_client_even_though_it_never_passes_item_id_to_the_budget(tmp_path, net):
+    """B calls budget.reserve(estimate) with no item_id; the per-item limit must still hold (fail closed, not fail open)."""
+    con, cfg, ledger, ext = build(tmp_path, inr_per_credit=0.2, max_cost=None, max_per_item=0.5, estimate=0.2)
+    call = lambda item, i: ext.post_json("crustdata", "identify", ID, {"domain": f"{item}{i}.com"}, item_id=item, stage="resolve")
+    assert [call("i1", i).error for i in range(4)] == [None, None, "BUDGET", "BUDGET"]       # ₹0.2 x 2 = 0.4; a 3rd would pass ₹0.5
+    assert call("i2", 0).ok                                                                  # another item has its own allowance
+    assert len(net.calls) == 3                                                               # blocked calls never reached the network
+    assert con.execute("select count(*) from cost_ledger where item_id='i1'").fetchone()[0] == 2   # and wrote no rows
+    assert Budget(con, "R", cfg_limits={}).spent("i1") == pytest.approx(0.4)
+
+
+def test_run_without_any_limit_is_never_blocked(tmp_path, net):
+    con, cfg, ledger, ext = build(tmp_path, inr_per_credit=0.2, max_cost=None, max_per_item=None)
+    assert all(ext.post_json("crustdata", "identify", ID, {"domain": f"d{i}.com"}, item_id="i1", stage="resolve").ok for i in range(20))

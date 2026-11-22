@@ -31,8 +31,13 @@ class SqliteLedger:
     is the only place that does. `costs` is the config `costs` section, used to price a confirmed call whose caller passed None."""
 
     def __init__(self, con: sqlite3.Connection, clock: Callable[[], datetime], *, run_id: str | None = None,
-                 session_id: str | None = None, costs: dict | None = None):
+                 session_id: str | None = None, costs: dict | None = None,
+                 pre_reserve: Callable[[float | None, str | None], None] | None = None):
         self.con, self.clock, self.run_id, self.session_id, self.costs = con, clock, run_id, session_id, costs or {}
+        # Called as pre_reserve(estimated_inr, item_id) before a row is written; it raises BudgetExceeded to refuse the call.
+        # The ledger is the one port that always sees the item_id, so per-item limits are enforced here even when the
+        # caller's budget.reserve() was made without one. A refused call writes no row.
+        self.pre_reserve = pre_reserve
         self._alias: dict[str, str] = {}      # key the caller asked for -> key actually stored (only when it collided)
 
     def _price(self, provider: str, unit_type: str, units: float) -> float | None:
@@ -71,7 +76,9 @@ class SqliteLedger:
 
     # ---- LedgerPort ----
     def reserve(self, e: LedgerEntry) -> str:
-        """Persist intent. Returns the call_key to confirm/fail. Raises PersistenceFailure if it cannot be written."""
+        """Persist intent. Returns the call_key to confirm/fail. Raises BudgetExceeded (per-item limit) or PersistenceFailure."""
+        if self.pre_reserve is not None:
+            self.pre_reserve(e.estimated_inr, e.item_id)
         return self._insert(e, "RESERVED", 0.0, e.estimated_inr, None)
 
     def confirm(self, call_key: str, units: float, actual_inr: float | None, http_status: int | None, duration_ms: int) -> None:

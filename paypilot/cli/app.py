@@ -26,9 +26,9 @@ from paypilot.core.db import connect
 from paypilot.core.lock import RunLock
 from paypilot.core.null_ext import NullExtClient
 from paypilot.io import batch
-from paypilot.ledger.budget import Budget, effective_cost_limit, request_limits
-from paypilot.ledger.cache import SqliteCache
-from paypilot.ledger.store import SqliteLedger, summarize
+from paypilot.ledger.budget import effective_cost_limit
+from paypilot.ledger.store import summarize
+from paypilot.ledger.wiring import make_ports
 from paypilot.io.request import load_request
 from paypilot.reports import writer
 from paypilot.reports.writer import fmt_inr, load_views
@@ -73,10 +73,7 @@ def _ctx(loaded: rt.Loaded, run_id: str, session_id: str, client_id: str, operat
 def _wire_ext(con, ctx: StageContext):
     """ExtClient over this run's ledger, cache and budget (lane B's sources/http.py). Until B3 lands it fails closed."""
     from paypilot.sources.http import make_ext_client
-    ledger = SqliteLedger(con, ctx.clock, run_id=ctx.run_id, session_id=ctx.session_id, costs=ctx.cfg.costs)
-    cache = SqliteCache(con, ctx.clock)
-    budget = Budget(con, ctx.run_id, cfg_limits=ctx.cfg.limits, request_limits=request_limits(con, ctx.run_id),
-                    unknown_reserve_inr=float(ctx.cfg.costs.get("unknown_reserve_inr", 1.0)))
+    ledger, cache, budget = make_ports(con, run_id=ctx.run_id, session_id=ctx.session_id, cfg=ctx.cfg, clock=ctx.clock)
     try:
         return make_ext_client(ctx.cfg, ledger, cache, budget)
     except NotImplementedError:
