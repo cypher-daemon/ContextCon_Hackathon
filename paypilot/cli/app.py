@@ -345,7 +345,6 @@ def approve(item: str = typer.Argument(..., help="Exact item_id, or a unique inv
             provider_name = rt.check_provider(provider, loaded.cfg)
             sid = _now_session(con, run_id, "approve")
             try:
-                rt.begin_recovery(con, run_id)                                 # reconcile first
                 result = approve_item(con, item_id=row["item_id"], reviewer=by, reason=reason, overrides=list(override or []), cfg=loaded.cfg,
                                       policy=loaded.policy, history=SqliteHistory(con, loaded.data, client_id, run_id),
                                       provider_name=provider_name, session_id=sid, now=rt.utcnow())
