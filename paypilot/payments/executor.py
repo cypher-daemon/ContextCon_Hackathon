@@ -11,6 +11,7 @@ documented terminal success (ProviderStatus.SUCCEEDED); non-terminal -> SUBMITTE
 """
 from __future__ import annotations
 
+import hmac
 import json
 import sqlite3
 from datetime import datetime
@@ -76,13 +77,15 @@ class BankChanged(Exception):
 def _bank_for_payout(client_id: str, vendor_id: str, decision: Decision, inv: Invoice) -> dict[str, str]:
     """Re-read the vendor-master row and check HMAC(raw) == the approved fingerprint. Raw number: in memory only."""
     raw, ifsc, legal = read_raw_bank(client_id, vendor_id)
-    approved = decision.facts.account_fingerprint or inv.account_fingerprint
-    if not raw:
-        raise BankChanged("the vendor master has no bank account for this vendor")
+    approved = decision.facts.account_fingerprint          # bound to the approved decision only; never fall back to the invoice's own value
+    if not raw or approved is None:
+        raise BankChanged("no approved bank fingerprint for this payout; re-decide and re-approve")
     fp, _ = fingerprint(raw, bank_hmac_key())
-    if approved is not None and fp != approved:
+    if not hmac.compare_digest(fp or "", approved):
         raise BankChanged("the vendor-master bank account changed between approval and execution")
-    return {"account_number": raw, "ifsc": ifsc or inv.ifsc or "", "vendor_name": legal or ""}
+    if not (ifsc or "").strip():
+        raise BankChanged("the vendor master has no IFSC for this vendor")
+    return {"account_number": raw, "ifsc": ifsc, "vendor_name": legal or ""}
 
 
 def _metadata(pay, item, inv: Invoice, bank: dict[str, str], att, provider: Any) -> dict:
