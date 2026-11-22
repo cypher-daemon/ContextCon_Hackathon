@@ -148,3 +148,16 @@ def test_one_request_sees_one_snapshot_even_if_a_write_lands_mid_build(db, monke
     monkeypatch.setattr(dash, "rows", real_rows)
     assert {i["item_id"]: i["state"] for i in dash.build_state(db, "R1")["items"]}["held1"] == "PAID"  # next poll sees it
     writer.close()
+
+
+def test_before_any_run_everything_is_zero(tmp_path):
+    for db in (tmp_path / "missing" / "pp.db", _empty_file(tmp_path)):
+        s = dash.build_state(db, None)
+        assert all(v == 0 for v in s["counts"].values()) and s["money"] == {"paid_paise": 0, "held_paise": 0, "returned_paise": 0}
+        assert s["items"] == s["exceptions"] == s["runs"] == []
+
+
+def _empty_file(tmp_path):
+    p = tmp_path / "empty.db"
+    sqlite3.connect(p).close()                      # a database file with no tables yet
+    return p

@@ -57,7 +57,28 @@ def rows(con, sql, *args):
     return [dict(r) for r in con.execute(sql, args)]
 
 
+def empty_state(db: Path) -> dict:
+    """Nothing has run yet (no database, or no tables): every figure is zero and every list is empty."""
+    zero = {"items": 0, "paid": 0, "held": 0, "uncertain": 0, "open_exceptions": 0, "blocking": 0, "pending_approvals": 0}
+    return {"db": str(db), "runs": [], "run_id": None, "counts": zero,
+            "money": {"paid_paise": 0, "held_paise": 0, "returned_paise": 0},
+            "items": [], "exceptions": [], "approvals": [], "audit": [],
+            "cost": {"status": "KNOWN", "total": 0.0, "unconfirmed": 0.0, "calls": 0, "cache_hits": 0, "providers": []},
+            "trial_balance": [], "entries": [], "journal": [], "payment_providers": []}
+
+
 def build_state(db: Path, run_id: str | None) -> dict:
+    if not db.exists():
+        return empty_state(db)
+    try:
+        return _build_state(db, run_id)
+    except sqlite3.OperationalError as e:
+        if "no such table" in str(e):         # the file exists but the first run has not created the schema yet
+            return empty_state(db)
+        raise
+
+
+def _build_state(db: Path, run_id: str | None) -> dict:
     con = connect(db)
     try:
         # One read transaction = one point-in-time snapshot (WAL). Without it a payment committing between two of the
@@ -217,7 +238,7 @@ def main() -> None:
     args = ap.parse_args()
     db = (args.db or default_db()).resolve()
     if not db.exists():
-        raise SystemExit(f"no database at {db}. Run `bash scripts/demo.sh` or pass --db.")
+        print(f"No database at {db} yet. Showing zeros until the first run creates it.")
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(db))
     print(f"PayPilot dashboard (read-only) on http://127.0.0.1:{args.port}  db={db}")
     try:
