@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PayPilot Control Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c1222; --bg2:#111a30; --panel:#141e38; --line:#24304f; --line2:#2f3d62;
+  --ink:#e9edf8; --mute:#8d99b8; --faint:#5d6a8c;
+  --saffron:#f4b14a; --teal:#46d1b5; --coral:#ff6f69; --sky:#6aa8ff; --violet:#a58bff;
+  --display:"Bricolage Grotesque","Instrument Sans",system-ui,sans-serif;
+  --body:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f3f1ec; --bg2:#eceae3; --panel:#fbfaf7; --line:#dedbd0; --line2:#cbc7b8;
+    --ink:#161c2e; --mute:#5c6580; --faint:#8b92a8;
+    --saffron:#b8700a; --teal:#0e8a73; --coral:#c9362f; --sky:#2f6fd6; --violet:#6a4fd0;
+  }
+}
+:root[data-theme="light"]{
+  --bg:#f3f1ec; --bg2:#eceae3; --panel:#fbfaf7; --line:#dedbd0; --line2:#cbc7b8;
+  --ink:#161c2e; --mute:#5c6580; --faint:#8b92a8;
+  --saffron:#b8700a; --teal:#0e8a73; --coral:#c9362f; --sky:#2f6fd6; --violet:#6a4fd0;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--body);-webkit-font-smoothing:antialiased}
+.num{font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--saffron);outline-offset:2px;border-radius:4px}
+.wrap{max-width:1280px;margin:0 auto;padding:0 24px 64px}
+
+/* top bar */
+header{display:flex;align-items:center;gap:20px;padding:20px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.brand{font:800 22px/1 var(--display);letter-spacing:-.02em;display:flex;align-items:center;gap:10px}
+.brand i{width:12px;height:12px;border-radius:3px;background:var(--saffron);display:inline-block;transform:rotate(45deg)}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line2);border-radius:999px;padding:5px 12px;color:var(--mute);font-size:13px}
+.live{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 0 var(--teal);animation:pulse 2.4s infinite}
+.live.off{background:var(--coral);animation:none}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--teal) 60%,transparent)}70%,100%{box-shadow:0 0 0 8px transparent}}
+select,.iconbtn{background:var(--panel);border:1px solid var(--line2);color:var(--ink);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;cursor:pointer}
+
+/* hero: where the money is */
+.hero{padding:44px 0 28px;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:48px;align-items:end}
+.hero h1{margin:0 0 6px;font:600 15px/1.3 var(--body);color:var(--mute)}
+.big{font:800 clamp(44px,7vw,84px)/.95 var(--display);letter-spacing:-.04em}
+.big small{font-size:.45em;color:var(--mute);font-weight:600;margin-right:6px;letter-spacing:0}
+.sub{color:var(--mute);margin-top:10px;max-width:46ch}
+.flow{display:flex;height:16px;border-radius:8px;overflow:hidden;background:var(--bg2);border:1px solid var(--line);margin:18px 0 12px}
+.flow span{display:block;height:100%;min-width:0;transition:flex-basis .6s}
+.legend{display:flex;gap:22px;flex-wrap:wrap}
+.legend div{display:flex;flex-direction:column;gap:2px}
+.legend b{font:600 20px/1.1 var(--display);letter-spacing:-.01em}
+.legend span{font-size:13px;color:var(--mute);display:flex;align-items:center;gap:7px}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+
+/* count strip */
+.strip{display:grid;grid-template-columns:repeat(5,1fr);border:1px solid var(--line);border-radius:14px;background:var(--panel);overflow:hidden}
+.strip div{padding:16px 20px;border-right:1px solid var(--line)}
+.strip div:last-child{border-right:0}
+.strip b{display:block;font:700 30px/1.1 var(--display);letter-spacing:-.02em}
+.strip span{font-size:13px;color:var(--mute)}
+
+/* layout */
+.cols{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:32px;margin-top:40px}
+section h2{font:700 20px/1.2 var(--display);letter-spacing:-.01em;margin:0 0 4px}
+section .note{color:var(--mute);font-size:13.5px;margin:0 0 16px}
+.stack>section+section{margin-top:40px}
+
+/* payment rails */
+.rail{border-top:1px solid var(--line)}
+.rail:last-child{border-bottom:1px solid var(--line)}
+.rail>button{all:unset;box-sizing:border-box;display:grid;grid-template-columns:minmax(150px,1.1fr) minmax(0,2fr) auto;gap:20px;align-items:center;width:100%;padding:16px 4px;cursor:pointer}
+.rail>button:hover{background:color-mix(in srgb,var(--panel) 70%,transparent)}
+.rail>button:focus-visible{outline:2px solid var(--saffron);outline-offset:-2px}
+.who b{display:block;font-weight:600}
+.who span{color:var(--mute);font-size:13px}
+.steps{display:grid;grid-template-columns:repeat(5,1fr);position:relative}
+.steps .s{display:flex;flex-direction:column;align-items:center;gap:6px;position:relative;font-size:11.5px;color:var(--faint)}
+.steps .s::before{content:"";position:absolute;top:6px;right:50%;width:100%;height:2px;background:var(--line2)}
+.steps .s:first-child::before{display:none}
+.steps .s i{width:14px;height:14px;border-radius:50%;background:var(--bg);border:2px solid var(--line2);position:relative;z-index:1}
+.steps .s.on{color:var(--ink)}
+.steps .s.on i{background:var(--teal);border-color:var(--teal)}
+.steps .s.on::before{background:var(--teal)}
+.steps .s.stop{color:var(--coral)}
+.steps .s.stop i{background:var(--coral);border-color:var(--coral);border-radius:3px;transform:rotate(45deg)}
+.steps .s.wait i{border-color:var(--saffron);background:transparent}
+.steps .s.wait{color:var(--saffron)}
+.steps .s.bad i{background:var(--coral);border-color:var(--coral)}
+.steps .s.bad::before{background:var(--coral)}
+.amt{text-align:right}
+.amt b{font:700 17px/1.2 var(--display)}
+.chip{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px;border:1px solid currentColor;margin-top:4px}
+.c-teal{color:var(--teal)}.c-coral{color:var(--coral)}.c-saffron{color:var(--saffron)}.c-sky{color:var(--sky)}.c-violet{color:var(--violet)}.c-mute{color:var(--mute)}
+.detail{display:none;padding:4px 4px 20px;color:var(--mute);font-size:14px}
+.rail.open .detail{display:block}
+.detail ul{margin:6px 0 0;padding:0;list-style:none}
+.detail li{padding:8px 0 8px 14px;border-left:2px solid var(--coral);margin:6px 0;color:var(--ink)}
+.detail li small{display:block;color:var(--mute)}
+.kv{display:flex;gap:24px;flex-wrap:wrap;margin-top:10px}
+.kv div{font-size:13px}.kv b{display:block;color:var(--ink);font-weight:600}
+
+/* generic table */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;font-weight:500;color:var(--mute);font-size:12.5px;padding:8px 8px 8px 0;border-bottom:1px solid var(--line)}
+td{padding:10px 8px 10px 0;border-bottom:1px solid var(--line);vertical-align:top}
+td.r,th.r{text-align:right;padding-right:0}
+
+/* exceptions */
+.exc{padding:14px 0 14px 16px;border-top:1px solid var(--line);position:relative}
+.exc:last-child{border-bottom:1px solid var(--line)}
+.exc::before{content:"";position:absolute;left:0;top:16px;bottom:16px;width:3px;border-radius:2px;background:var(--sev,var(--mute))}
+.exc.HIGH{--sev:var(--coral)}.exc.MEDIUM{--sev:var(--saffron)}.exc.LOW{--sev:var(--sky)}
+.exc b{display:block;font-weight:600;word-break:break-word}
+.exc p{margin:4px 0 6px;color:var(--mute);font-size:13.5px}
+.exc .meta{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--mute)}
+.exc .meta span{border:1px solid var(--line2);border-radius:6px;padding:1px 7px}
+.exc .act{font-size:13px;color:var(--ink);margin-top:6px}
+
+/* audit timeline */
+.tl{list-style:none;margin:0;padding:0;max-height:560px;overflow:auto}
+.tl li{display:grid;grid-template-columns:62px 1fr;gap:12px;padding:8px 0;font-size:13.5px;border-bottom:1px solid var(--line)}
+.tl time{color:var(--faint);font-size:12.5px}
+.tl .arrow{color:var(--mute)}
+.tl em{font-style:normal;color:var(--mute);font-size:12.5px;display:block}
+
+.empty{padding:22px 0;color:var(--mute)}
+.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px;margin-top:40px}
+.unknown{color:var(--saffron);font-weight:700}
+.err{background:color-mix(in srgb,var(--coral) 14%,var(--bg));border:1px solid var(--coral);color:var(--ink);padding:14px 16px;border-radius:10px;margin-top:24px}
+footer{margin-top:48px;color:var(--faint);font-size:12.5px}
+
+@media (max-width:980px){
+  .hero,.cols,.grid3{grid-template-columns:1fr;gap:28px}
+  .strip{grid-template-columns:repeat(2,1fr)}
+  .strip div{border-bottom:1px solid var(--line)}
+}
+@media (max-width:640px){
+  .wrap{padding:0 16px 48px}
+  .rail>button{grid-template-columns:1fr auto;gap:12px}
+  .rail .steps{grid-column:1/-1;order:3}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><i></i>PayPilot</div>
+    <span class="pill" id="prov">FakeProvider · no real money</span>
+    <div class="spacer"></div>
+    <label class="pill">Run
+      <select id="run" aria-label="Choose run"></select>
+    </label>
+    <span class="pill"><span class="live" id="live"></span><span id="stamp">connecting</span></span>
+    <button class="iconbtn" id="theme" aria-label="Switch light and dark theme">Theme</button>
+  </header>
+
+  <div id="error"></div>
+
+  <div class="hero">
+    <div>
+      <h1>Paid out to vendors</h1>
+      <div class="big num" id="paid">₹0</div>
+      <p class="sub" id="herosub"></p>
+    </div>
+    <div>
+      <div class="flow" id="flow" role="img" aria-label="Share of invoice value paid, held and returned"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </div>
+
+  <div class="strip" id="strip"></div>
+
+  <div class="cols">
+    <div class="stack">
+      <section>
+        <h2>Invoice payments</h2>
+        <p class="note">Each invoice moves left to right. A red diamond marks where it stopped. Click a row for the reason.</p>
+        <div id="invoices"></div>
+      </section>
+      <section>
+        <h2>Bank lines</h2>
+        <p class="note">Statement lines posted to the books or held for review.</p>
+        <div id="banklines"></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section>
+        <h2>Exceptions</h2>
+        <p class="note">Blocking exceptions contain the vendor until a person resolves them.</p>
+        <div id="exceptions"></div>
+      </section>
+      <section>
+        <h2>Approvals</h2>
+        <p class="note">Each approval is bound to the exact decision it covers.</p>
+        <div id="approvals"></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="grid3">
+    <section><h2>Audit trail</h2><p class="note">Latest state changes, newest first.</p><ul class="tl" id="audit"></ul></section>
+    <section><h2>Trial balance</h2><p class="note">Every journal entry balances.</p><div id="tb"></div></section>
+    <section><h2>Lookup cost</h2><p class="note">A missing price shows as unknown, never ₹0.</p><div id="cost"></div></section>
+  </div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const inr = p => "₹" + (p/100).toLocaleString("en-IN", {minimumFractionDigits: (p % 100 ? 2 : 0), maximumFractionDigits: 2});
+const inrFull = p => "₹" + (p/100).toLocaleString("en-IN", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const words = s => String(s || "").toLowerCase().replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+const hhmm = ts => ts ? new Date(ts).toLocaleTimeString("en-IN", {hour:"2-digit", minute:"2-digit", hour12:false}) : "";
+let currentRun = "", open = new Set();
+
+// theme
+try { const t = localStorage.getItem("pp-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+$("theme").onclick = () => {
+  const dark = (document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")) === "dark";
+  const next = dark ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("pp-theme", next); } catch (e) {}
+};
+
+const STAGES = ["Checked", "Approved", "Sent", "Confirmed", "Settled"];
+function stageClasses(it) {
+  const p = it.payment, a = it.approval;
+  const out = STAGES.map(() => "");
+  out[0] = "on";
+  if (a && a.status === "APPROVED") out[1] = "on";
+  else if (it.state === "HELD" || it.proposal === "HELD") out[0] = "stop";
+  else out[1] = "wait";
+  if (p) {
+    out[2] = "on";
+    const ok = ["PROVIDER_CONFIRMED", "PAID"].includes(p.status);
+    if (ok) out[3] = "on";
+    else if (["RETURNED", "REVERSED"].includes(p.status)) out[3] = "bad";
+    else if (p.status === "PAYMENT_UNCERTAIN") out[3] = "wait";
+    else out[3] = "wait";
+    if (p.settlement === "MATCHED") out[4] = "on";
+    else if (ok) out[4] = "wait";
+  }
+  return out;
+}
+function status(it) {
+  const p = it.payment;
+  if (p) {
+    const m = {PROVIDER_CONFIRMED:["Paid","c-teal"], PAID:["Paid","c-teal"], RETURNED:["Returned by bank","c-coral"], REVERSED:["Reversed","c-coral"],
+      PAYMENT_UNCERTAIN:["Outcome unknown","c-saffron"]};
+    if (m[p.status]) return m[p.status];
+    return [words(p.status), "c-sky"];
+  }
+  if (it.state === "HELD") return ["Held", "c-coral"];
+  if (it.approval && it.approval.status === "PENDING") return ["Needs approval", "c-saffron"];
+  return [words(it.state), "c-mute"];
+}
+
+function renderInvoices(items) {
+  const inv = items.filter(i => i.kind === "Invoice");
+  if (!inv.length) return `<div class="empty">No invoices in this run. Run <code>python -m paypilot run --scenario scenarios/pay-invoices</code>.</div>`;
+  return inv.map(it => {
+    const [label, cls] = status(it), st = stageClasses(it);
+    const reasons = it.reasons.map(r => `<li>${esc(r.text || words(r.code))}<small>${esc(words(r.code))}${r.rule ? " · rule " + esc(r.rule) : ""}</small></li>`).join("");
+    const att = (it.payment?.attempts || []).map(a => `Attempt ${a.no}: ${esc(words(a.outcome))}${a.error ? " (" + esc(a.error) + ")" : ""}`).join("; ");
+    const isOpen = open.has(it.item_id);
+    return `<div class="rail ${isOpen ? "open" : ""}" data-id="${esc(it.item_id)}">
+      <button aria-expanded="${isOpen}">
+        <div class="who"><b>${esc(it.label)}</b><span>${esc(it.ref)}${it.invoice_no ? " · " + esc(it.invoice_no) : ""}</span></div>
+        <div class="steps" aria-hidden="true">${STAGES.map((s, i) => `<div class="s ${st[i]}"><i></i>${s}</div>`).join("")}</div>
+        <div class="amt"><b class="num">${inr(it.amount_paise || 0)}</b><br><span class="chip ${cls}">${esc(label)}</span></div>
+      </button>
+      <div class="detail">
+        ${reasons ? `<ul>${reasons}</ul>` : `<div>No flags raised.</div>`}
+        <div class="kv">
+          <div>Vendor<b>${esc(it.vendor_id || "Unresolved")}</b></div>
+          <div>Invoice date<b>${esc(it.date || "n/a")}</b></div>
+          <div>Due<b>${esc(it.due_date || "n/a")}</b></div>
+          <div>Approval<b>${it.approval ? esc(words(it.approval.status)) + (it.approval.reviewer ? " by " + esc(it.approval.reviewer) : "") : "None"}</b></div>
+          ${it.payment ? `<div>Provider<b>${esc(it.payment.provider)}</b></div><div>Settlement<b>${esc(words(it.payment.settlement))}</b></div>` : ""}
+        </div>
+        ${att ? `<div class="kv"><div>Attempts<b>${att}</b></div></div>` : ""}
+      </div></div>`;
+  }).join("");
+}
+
+function renderBank(items) {
+  const b = items.filter(i => i.kind === "BankLine");
+  if (!b.length) return `<div class="empty">No bank lines in this run.</div>`;
+  const cls = {POSTED:"c-teal", RECONCILED:"c-teal", HELD:"c-coral", CANNOT_VERIFY:"c-saffron"};
+  return `<table><thead><tr><th>Line</th><th>Descriptor</th><th>Date</th><th>State</th><th class="r">Amount</th></tr></thead><tbody>` +
+    b.map(x => `<tr><td>${esc(x.ref)}</td><td>${esc(x.label)}${x.flags.length ? `<br><span class="c-coral" style="font-size:12.5px">${x.flags.map(f => esc(words(f))).join(", ")}</span>` : ""}</td>
+      <td class="num">${esc(x.date || "")}</td><td><span class="chip ${cls[x.state] || "c-mute"}">${esc(words(x.state))}</span></td>
+      <td class="r num">${inrFull(x.amount_paise || 0)}</td></tr>`).join("") + `</tbody></table>`;
+}
+
+function renderExceptions(ex) {
+  if (!ex.length) return `<div class="empty">No exceptions. Nothing is blocking payment.</div>`;
+  return ex.map(e => `<div class="exc ${esc(e.severity)}">
+      <b>${esc(words(e.type))}</b><p>${esc(e.details || e.summary)}</p>
+      <div class="meta"><span>${esc(words(e.severity))}</span><span>${esc(words(e.status))}</span>${e.blocking ? "<span>Blocking</span>" : ""}${e.vendor_id ? `<span>${esc(e.vendor_id)}</span>` : ""}<span>${e.evidence_count} evidence</span></div>
+      <div class="act">${esc(e.recommended_action)}</div></div>`).join("");
+}
+
+function renderApprovals(ap, items) {
+  if (!ap.length) return `<div class="empty">No approvals requested yet.</div>`;
+  const ref = Object.fromEntries(items.map(i => [i.item_id, i]));
+  const cls = {APPROVED:"c-teal", PENDING:"c-saffron", REJECTED:"c-coral", SUPERSEDED:"c-mute"};
+  return `<table><thead><tr><th>Invoice</th><th>Decision</th><th>By</th></tr></thead><tbody>` + ap.map(a => {
+    const it = ref[a.item_id];
+    return `<tr><td>${esc(it ? it.ref : a.item_id.slice(0, 8))}<br><span style="color:var(--mute);font-size:12.5px">hash ${esc(a.decision_hash)}</span></td>
+      <td><span class="chip ${cls[a.status] || "c-mute"}">${esc(words(a.status))}</span></td><td>${esc(a.reviewer || "Waiting")}</td></tr>`;
+  }).join("") + `</tbody></table>`;
+}
+
+function renderAudit(a) {
+  if (!a.length) return `<li class="empty">No events yet.</li>`;
+  return a.map(e => `<li><time class="num">${hhmm(e.ts)}</time><div>${esc(words(e.entity_type))} ${esc(String(e.entity_id).slice(0, 10))}
+    <span class="arrow">${esc(e.previous_state || "new")} → <b style="color:var(--ink)">${esc(e.new_state || "")}</b></span>
+    <em>${esc(e.actor)}${e.reason ? " · " + esc(e.reason) : ""}</em></div></li>`).join("");
+}
+
+function renderTB(tb) {
+  if (!tb.length) return `<div class="empty">No journal entries yet.</div>`;
+  const d = tb.reduce((s, r) => s + r.debit, 0), c = tb.reduce((s, r) => s + r.credit, 0);
+  return `<table><thead><tr><th>Account</th><th class="r">Debit</th><th class="r">Credit</th></tr></thead><tbody>` +
+    tb.map(r => `<tr><td>${esc(r.account)}</td><td class="r num">${r.debit ? inrFull(r.debit) : ""}</td><td class="r num">${r.credit ? inrFull(r.credit) : ""}</td></tr>`).join("") +
+    `<tr><td><b>Total</b></td><td class="r num"><b>${inrFull(d)}</b></td><td class="r num"><b>${inrFull(c)}</b></td></tr></tbody></table>
+    <p class="note" style="margin-top:12px">${d === c ? `<span class="c-teal">Balanced.</span>` : `<span class="c-coral">Out of balance by ${inrFull(Math.abs(d - c))}.</span>`}</p>`;
+}
+
+function renderCost(c) {
+  if (!c.calls && !c.cache_hits) return `<div class="empty">No paid lookups yet.</div>`;
+  const money = v => "₹" + v.toFixed(2);
+  const head = c.status === "UNKNOWN" ? `<span class="unknown">UNKNOWN</span>`
+    : c.status === "PARTIAL" ? `${money(c.total)}<span class="unknown" style="font-size:16px"> + unknown</span>` : money(c.total);
+  const note = c.status === "KNOWN" ? `${c.calls} lookups, every one priced.`
+    : c.status === "PARTIAL" ? `${c.calls} lookups. The total is a lower bound because some have no price.`
+    : `${c.calls} lookups, none priced yet.`;
+  const unconf = c.unconfirmed ? ` ${money(c.unconfirmed)} reserved for calls with no recorded outcome.` : "";
+  return `<div class="big num" style="font-size:40px">${head}</div>
+    <p class="note">${note}${unconf} ${c.cache_hits} served from cache.</p>
+    <table><thead><tr><th>Provider</th><th class="r">Spend</th></tr></thead><tbody>` +
+    c.providers.map(p => `<tr><td>${esc(p.provider)}</td><td class="r num">${p.unknown ? `<span class="unknown">UNKNOWN</span>` : money(p.spend)}</td></tr>`).join("") + `</tbody></table>`;
+}
+
+function render(s) {
+  $("error").innerHTML = "";
+  const m = s.money, c = s.counts, total = m.paid_paise + m.held_paise + m.returned_paise;
+  $("paid").innerHTML = inr(m.paid_paise);
+  $("herosub").textContent = total
+    ? `${c.paid} of ${s.items.filter(i => i.kind === "Invoice").length} invoices paid. ${inr(m.held_paise)} is held and ${inr(m.returned_paise)} came back from the bank.`
+    : "No invoice payments in this run yet.";
+  const seg = [["Paid", m.paid_paise, "var(--teal)"], ["Held", m.held_paise, "var(--coral)"], ["Returned", m.returned_paise, "var(--saffron)"]];
+  $("flow").innerHTML = total ? seg.map(([n, v, col]) => `<span style="flex:${v} 1 0;background:${col}" title="${n} ${inr(v)}"></span>`).join("") : "";
+  $("legend").innerHTML = seg.map(([n, v, col]) => `<div><b class="num">${inr(v)}</b><span><i class="dot" style="background:${col}"></i>${n}</span></div>`).join("");
+
+  const strip = [[c.items, "Items processed"], [c.pending_approvals, "Waiting for approval"], [c.open_exceptions, "Open exceptions"], [c.blocking, "Blocking payment"], [c.uncertain, "Outcome unknown"]];
+  $("strip").innerHTML = strip.map(([n, l]) => `<div><b class="num">${n}</b><span>${l}</span></div>`).join("");
+
+  $("invoices").innerHTML = renderInvoices(s.items);
+  $("banklines").innerHTML = renderBank(s.items);
+  $("exceptions").innerHTML = renderExceptions(s.exceptions);
+  $("approvals").innerHTML = renderApprovals(s.approvals, s.items);
+  $("audit").innerHTML = renderAudit(s.audit);
+  $("tb").innerHTML = renderTB(s.trial_balance);
+  $("cost").innerHTML = renderCost(s.cost);
+  $("foot").textContent = "Read-only view of " + s.db + ". Nothing here can approve or pay.";
+  const sel = $("run");
+  if (sel.options.length !== s.runs.length + 1) {
+    sel.innerHTML = `<option value="">All runs</option>` + s.runs.map(r => `<option value="${esc(r.run_id)}">${esc(r.run_id)} · ${esc(r.client_id)}</option>`).join("");
+    sel.value = currentRun;
+  }
+}
+
+document.addEventListener("click", ev => {
+  const b = ev.target.closest(".rail > button");
+  if (!b) return;
+  const r = b.parentElement, id = r.dataset.id;
+  const o = r.classList.toggle("open");
+  b.setAttribute("aria-expanded", o);
+  o ? open.add(id) : open.delete(id);
+});
+$("run").onchange = e => { currentRun = e.target.value; lastBody = ""; load(); };
+
+let lastBody = "";
+async function load() {
+  try {
+    const r = await fetch("/api/state" + (currentRun ? "?run=" + encodeURIComponent(currentRun) : ""));
+    const text = await r.text();
+    const s = JSON.parse(text);
+    if (!r.ok) throw new Error(s.error || r.status);
+    if (text !== lastBody) {            // re-render only on change so focus and scroll are not lost
+      lastBody = text;
+      const focusId = document.activeElement?.closest?.(".rail")?.dataset.id;
+      const scroll = $("audit").scrollTop;
+      render(s);
+      $("audit").scrollTop = scroll;
+      if (focusId) document.querySelector(`.rail[data-id="${CSS.escape(focusId)}"] > button`)?.focus();
+    }
+    $("live").classList.remove("off");
+    $("stamp").textContent = "Updated " + new Date().toLocaleTimeString("en-IN", {hour12: false});
+  } catch (e) {
+    $("live").classList.add("off");
+    $("stamp").textContent = "Disconnected";
+    $("error").innerHTML = `<div class="err">Can't read the database: ${esc(e.message)}. Start the server with <code>python scripts/dashboard.py --db &lt;path&gt;</code>.</div>`;
+  }
+}
+load(); setInterval(load, 4000);
+</script>
+</body>
+</html>
