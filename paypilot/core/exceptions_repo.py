@@ -54,6 +54,25 @@ def can_move(frm: str, to: str, evidence_refs: list[str]) -> bool:
         return bool(evidence_refs) if to in NEEDS_EVIDENCE else True
 
 
+def lifecycle_path(frm: str, to: str, evidence_refs: list[str]) -> list[str] | None:
+    """Shortest chain of lane C's allowed edges from `frm` to `to` (excluding `frm`), or None. Evidence is checked on every edge, so a
+    RESOLVED hop without evidence is never allowed; a no-op (frm == to) is the empty path."""
+    if frm == to:
+        return []
+    from collections import deque
+    seen, q = {frm}, deque([(frm, [])])
+    names = ["DETECTED", "CLASSIFIED", "CONTAINED", "INVESTIGATING", "ACTION_REQUIRED", "RESOLVED", "FALSE_POSITIVE", "ACCEPTED_RISK", "CLOSED_NO_ACTION"]
+    while q:
+        cur, path = q.popleft()
+        for nxt in names:
+            if nxt not in seen and can_move(cur, nxt, evidence_refs):
+                if nxt == to:
+                    return path + [nxt]
+                seen.add(nxt)
+                q.append((nxt, path + [nxt]))
+    return None
+
+
 def resolve_exception(con: sqlite3.Connection, *, exception_id: str, by: str, resolution: str, note: str, evidence: list[str],
                       now: datetime, session_id: str) -> tuple[str, str | None]:
     """Move an exception (and its recovery case) along its lifecycle. Returns (new exception status, recovery status or None)."""
@@ -69,8 +88,10 @@ def resolve_exception(con: sqlite3.Connection, *, exception_id: str, by: str, re
         if e is None:
             raise ExceptionRefused(f"no exception {exception_id}")
         new = RESOLUTION_CODES[code]
-        if not can_move(e["status"], new, evidence):
-            why = ("a closed exception cannot be reopened" if e["status"] in CLOSED else f"{new} needs evidence (--evidence SOURCE_ID_OR_REF)")
+        path = lifecycle_path(e["status"], new, evidence)
+        if path is None:
+            why = ("a closed exception cannot be reopened" if e["status"] in CLOSED else
+                   f"{new} is not reachable from {e['status']} (RESOLVED needs evidence: --evidence SOURCE_ID_OR_REF)")
             raise ExceptionRefused(f"{e['status']} -> {new} refused: {why}")
         rec = con.execute("SELECT * FROM recovery_cases WHERE exception_id=?", (exception_id,)).fetchone()
         rec_status = None
@@ -81,12 +102,16 @@ def resolve_exception(con: sqlite3.Connection, *, exception_id: str, by: str, re
                                        "FALSE_POSITIVE or CLOSED_NO_ACTION")
             if rec_status is None and new in CLOSED:
                 rec_status = "CLOSED_NO_ACTION"
-        con.execute("UPDATE exceptions SET status=?, resolution_code=?, resolution_note=?, resolved_by=?, resolved_at=?, updated_at=?, "
-                    "evidence_refs_json=? WHERE exception_id=?",
-                    (new, code, note.strip(), by, now.isoformat() if new in CLOSED else None, now.isoformat(),
-                     json.dumps(sorted(set(json.loads(e["evidence_refs_json"])) | set(evidence))), exception_id))
-        append_event(con, run_id=e["run_id"], session_id=session_id, entity_type="exception", entity_id=exception_id, previous_state=e["status"],
-                     new_state=new, actor=by, ts=now, reason=note.strip(), metadata={"resolution": code, "evidence": evidence})
+        prev = e["status"]
+        for hop in path or [new]:                           # one audit event per lifecycle edge, in order
+            last = hop == new
+            con.execute("UPDATE exceptions SET status=?, updated_at=?" + (", resolution_code=?, resolution_note=?, resolved_by=?, resolved_at=?, "
+                        "evidence_refs_json=?" if last else "") + " WHERE exception_id=?",
+                        (hop, now.isoformat()) + ((code, note.strip(), by, now.isoformat() if new in CLOSED else None,
+                                                   json.dumps(sorted(set(json.loads(e["evidence_refs_json"])) | set(evidence)))) if last else ()) + (exception_id,))
+            append_event(con, run_id=e["run_id"], session_id=session_id, entity_type="exception", entity_id=exception_id, previous_state=prev,
+                         new_state=hop, actor=by, ts=now, reason=note.strip(), metadata={"resolution": code, "evidence": evidence if last else []})
+            prev = hop
         if rec is not None and rec_status:
             con.execute("UPDATE recovery_cases SET status=?, evidence_refs_json=?, updated_at=? WHERE recovery_id=?",
                         (rec_status, json.dumps(evidence), now.isoformat(), rec["recovery_id"]))

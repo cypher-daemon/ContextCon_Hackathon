@@ -18,7 +18,7 @@ from paypilot.io.money import parse_amount_paise
 from paypilot.io.request import RequestError, safe_input_path
 from paypilot.resolve import normalize as _norm
 from paypilot.context import StageContext
-from paypilot.schemas import BankLine, Invoice, ParseFailure, Request, VendorMessage
+from paypilot.schemas import BankLine, Invoice, Operation, ParseFailure, Request, VendorMessage
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ACCOUNT_FIELDS = {"remit_bank_account", "new_bank_account"}
@@ -143,7 +143,7 @@ def _parse_message(r: _Row, item_id: str, ref: str, ctx: StageContext, key: str)
                          new_account_fingerprint=fp, new_account_last4=last4, new_ifsc=ifsc.upper() if ifsc else None)
 
 
-_PARSERS = {"bank_lines": "line_id", "invoices": "invoice_id", "vendor_messages": "message_id"}
+_PARSERS = {"bank_lines": "line_id", "bank_statement": "line_id", "invoices": "invoice_id", "vendor_messages": "message_id"}
 
 
 def load_items(request: Request, ctx: StageContext) -> list[BankLine | Invoice | VendorMessage | ParseFailure]:
@@ -152,8 +152,8 @@ def load_items(request: Request, ctx: StageContext) -> list[BankLine | Invoice |
     key = bank_hmac_key() if any(k in ("invoices", "vendor_messages") for k in request.inputs) else ""
     out: list[BankLine | Invoice | VendorMessage | ParseFailure] = []
     for input_key, fname in request.inputs.items():
-        if input_key == "bank_statement":
-            continue
+        if input_key == "bank_statement" and request.operation is not Operation.RECONCILE:
+            continue                      # a statement is only a work item in a RECONCILE run (each line is reconciled)
         for row_no, rec in enumerate(_read_rows(safe_input_path(base, fname)), start=1):
             iid = ids.item_id(request.client_id, request.source_sha, fname, row_no)
             if not isinstance(rec, dict):
@@ -162,7 +162,7 @@ def load_items(request: Request, ctx: StageContext) -> list[BankLine | Invoice |
             sid = rec.get(_PARSERS[input_key])
             ref = f"{fname}#{sid if isinstance(sid, str) and sid else 'row' + str(row_no)}"
             r = _Row(rec)
-            item = (_parse_bank_line(r, iid, ref, ctx) if input_key == "bank_lines" else
+            item = (_parse_bank_line(r, iid, ref, ctx) if input_key in ("bank_lines", "bank_statement") else
                     _parse_invoice(r, iid, ref, ctx, key) if input_key == "invoices" else
                     _parse_message(r, iid, ref, ctx, key))
             out.append(item if item is not None else ParseFailure(item_id=iid, source_ref=ref, errors=r.errors))

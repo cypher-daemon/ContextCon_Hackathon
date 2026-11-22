@@ -28,7 +28,7 @@ from paypilot.exceptions.classify import classify
 from paypilot.ledger.budget import effective_cost_limit
 from paypilot.ledger.store import summarize
 from paypilot.resolve.matcher import resolve_vendor
-from paypilot.schemas import (BankLine, CheckResult, Decision, ExceptionDraft, Facts, Invoice, ItemState as S,
+from paypilot.schemas import (Operation, BankLine, CheckResult, Decision, ExceptionDraft, Facts, Invoice, ItemState as S,
                               ParseFailure, Proposal, Reason, Request, Resolution, RunConfig, RunStatus,
                               RunSummary, Severity, VendorMessage)
 
@@ -172,6 +172,9 @@ def _advance_one(con: sqlite3.Connection, ctx: StageContext, item_id: str) -> bo
                                   drafts=drafts, now=now)
         else:
             transition(con, expected_state=S.NEW, expected_version=ver, new_state=S.PARSED, **common)
+    elif state is S.PARSED and ctx.operation is Operation.RECONCILE and isinstance(item, BankLine):
+        from paypilot.core.reconcile_op import reconcile_line        # A12: a statement line is reconciled, not posted or paid
+        reconcile_line(con, ctx, row, item)
     elif state is S.PARSED:
         res = resolve_vendor(item, ctx)
         transition(con, expected_state=S.PARSED, expected_version=ver, new_state=S.RESOLVED,

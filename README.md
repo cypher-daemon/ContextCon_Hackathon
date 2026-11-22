@@ -3,7 +3,7 @@
 **Accounts-payable operations for mid-size Indian logistics companies: pay every invoice at most once, never guess a payee, and manage every financial exception until it is resolved.**
 ContextCon 05 · BITS Pilani · Track: Buying & Paying
 
-> **Status: working build (hackathon).** Bookkeeping, payment safety (crash recovery, reconcile-first, reversal after success), exceptions and `audit verify` run end to end on the FakeProvider. The RazorpayX test-mode adapter is written but unverified against the live test API. RECONCILE (statement matching, TASKS A12) is waiting on lane C's three-way match. Automated tests for the new code are still to be written.
+> **Status: working build (hackathon).** Bookkeeping, payment safety (crash recovery, reconcile-first, reversal after success), RECONCILE against a bank statement, exceptions with the full lifecycle, and `audit verify` run end to end on the FakeProvider. The RazorpayX test-mode adapter is written and has been shown to create and poll a real test payout, but the crash drill and terminal states are not yet verified against it. Automated tests for the new code are still to be written (some older contract tests assume the stub executor).
 
 ## The job and who pays
 Payables teams and outsourced AP firms are paid to match bank lines and invoices to vendors, catch duplicates and bank-detail fraud, get approvals, pay, and chase errors. PayPilot does that job for the **finance controller of a mid-size 3PL**, or for an **outsourced AP firm** serving many of them.
@@ -19,7 +19,7 @@ python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 cp .env.example .env            # set BANK_HMAC_KEY to a random value (demo.sh falls back to a throwaway key)
 bash scripts/demo.sh            # DEMO_PAUSE=1 waits for Enter between scenes
 ```
-The demo runs seven scenes on the FakeProvider (no real money, nothing under `clients/` is modified): month-end posting; invoices with a duplicate held; refused approvals (never-overridable flag, non-approver); one approval → one payment, a second approve is a no-op; a `kill -9` mid-payment that `resume` reconciles with the same key; a bank return *after* confirmed success (payment RETURNED, item back to HELD, REVERSAL entry, CRITICAL exception + recovery case, vendor contained); and `audit verify` replaying the books. Outputs land in `.demo/out/<run_id>/`.
+The demo runs eight scenes on the FakeProvider (no real money, nothing under `clients/` is modified): month-end posting; invoices with a duplicate held; refused approvals (never-overridable flag, non-approver); one approval → one payment, a second approve is a no-op; a `kill -9` mid-payment that `resume` reconciles with the same key; a bank return *after* confirmed success (payment RETURNED, item back to HELD, REVERSAL entry, CRITICAL exception + recovery case, vendor contained); a bank-statement reconcile (matched, duplicate debit, returned payment, unknown debit); and `audit verify` replaying the books. Outputs land in `.demo/out/<run_id>/`.
 
 Fault injection for your own drills: `PAYPILOT_CRASH_AT=<point>` kills the process at a named point (see `paypilot/core/crash.py`); `PAYPILOT_FAKE_FAULT=TIMEOUT_AFTER_CREATE|TIMEOUT_BEFORE_CREATE|DECLINE|PROCESSING|RETURNED_AFTER_SUCCESS|UNKNOWN_STATUS` makes the FakeProvider misbehave; `python -m paypilot fake-provider set REF STATUS` moves a payment by hand like the RazorpayX test Dashboard.
 
