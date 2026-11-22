@@ -6,7 +6,7 @@
 | # | Topic | Decision |
 |---|---|---|
 | D1 | What we ship | Our own B2B product, judged on system design + demo video + live demo. **We define the internal input/output formats and the test world** (`scenarios/`, `clients/northbay/`). If the organizers' kickoff kit specifies an external I/O format, a thin adapter maps it to and from our internal models (TASKS A18). The internal schemas stay unchanged and we don't guess the external one. Hackathon Part A rules still bind (sources, approval, test-mode payments, limits, live data, cannot-verify, kill/restart). |
-| D2 | Form | Python CLI modular monolith, package `paypilot`, SQLite WAL. No dashboard in the critical path (a static HTML report is P2, for the video). |
+| D2 | Form | Python CLI modular monolith, package `paypilot`, SQLite WAL. A local read-only dashboard is a secondary view, not part of the write/approval/payment path. |
 | D3 | Layering | Pure logic (lanes B, C) + one side-effect runtime (lane A). |
 | D4 | Operations | `POST_BANK_LINES`, `PAY_INVOICES`, `RECONCILE`. The request must state one explicitly; otherwise the result is a run-level CANNOT_VERIFY. A bank line is never a payment instruction. |
 | D5 | Exactly-once | At most one successful provider action per logical payment: immutable payment key + per-attempt provider key, outbox, step-recorded create/confirm (RazorpayX: one create call; `confirm` only retrieves), reconcile-before-act, fail-closed PAYMENT_UNCERTAIN. The guarantee rests on provider idempotency + durable state + reconciliation. It is not distributed atomic exactly-once. |

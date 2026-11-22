@@ -20,7 +20,7 @@
 | **Product promise** | Never guess who to pay. Never pay the same invoice twice, even through crashes. Never take an irreversible action without a human. Keep every problem visible until it is resolved with evidence. |
 | **Pass mark** | All scenarios in `SCENARIOS.md` produce their expected outcomes, asserted against the **database, output files and audit log**; the kill -9 loop yields ≤ 1 successful provider payment per invoice; `audit verify` replays every decision and balances the books; every output fact has a source. |
 
-**What PayPilot deliberately is not:** an LLM that decides payments; a bank; a proof of account ownership; a dashboard product (the operator surface is a CLI plus generated reports); a distributed system (yet, see §12).
+**What PayPilot deliberately is not:** an LLM that decides payments; a bank; proof of account ownership; a dashboard-driven workflow (the web dashboard is read-only and secondary to the CLI); a distributed system (yet, see §12).
 
 ---
 
@@ -391,7 +391,7 @@ The full matrix is in [`FAILURE_MODES.md`](FAILURE_MODES.md).
 
 | # | Decision | Chosen | Alternatives | Why / trade-off |
 |---|---|---|---|---|
-| 1 | Form factor | CLI modular monolith | LLM agent loop; web app + dashboard; microservices | Deterministic, crash-testable, buildable in 7 h. Trade-off: no GUI (generated reports instead) |
+| 1 | Form factor | CLI modular monolith, with a read-only local dashboard for observation | LLM agent loop; write-enabled web workflow; microservices | Deterministic, crash-testable core. The dashboard cannot approve, pay, or mutate the ledger. |
 | 2 | Layering | Pure logic layers + one side-effect runtime | Each module persists its own state | Exactly-once is provable in one place; logic is unit-testable |
 | 3 | Store | SQLite WAL, `synchronous=FULL`, single-instance lock | Postgres; JSON files | Atomic multi-row transactions, zero setup. Trade-off: one writer (fine now; Postgres at scale) |
 | 4 | Lifecycles | Item, payment, exception and recovery as separate machines | One merged enum | A payment can succeed while its exception stays open |

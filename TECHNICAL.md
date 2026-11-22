@@ -8,6 +8,7 @@ This document records what is implemented in this checkout and the gaps found wh
 - Request and batch parsing, client vendor/PO/history/chart loading, HMAC bank-account fingerprints, vendor-master resolution, deterministic checks and decisions, and source adapters for Crustdata, website fetch, and IFSC lookups.
 - Item state transitions, durable audit events, exception and recovery-case workflows, double-entry journals, reports, cost ledger, audit verification, and operational reconciliation code.
 - Approval records bound to decision hashes, approver checks, an atomic payment outbox enqueue, FakeProvider execution, idempotent payment attempt steps, and crash/reconcile handling. The RazorpayX adapter is explicitly test-mode only.
+- A read-only local dashboard in `scripts/dashboard.py`, with run-scoped payments, exceptions, approvals, books, costs, and audit views. It opens SQLite in read-only mode and serves only loopback; it is not a payment/approval interface.
 - The CLI lock uses the Windows locking API on Windows and `fcntl` on POSIX. The report writer emits UTF-8; interactive Windows CLI output selects UTF-8, while redirected output retains its consumer encoding and replaces unsupported characters.
 
 ## Known gaps and verification limits

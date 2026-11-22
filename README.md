@@ -4,7 +4,7 @@ PayPilot is a Python CLI prototype for accounts-payable workflows at mid-size In
 
 ## Current implementation status
 
-The repository contains working modules for request and batch loading, vendor-master matching, checks and decisions, SQLite persistence, journal entries, approvals, FakeProvider payment execution and recovery, report generation, and audit verification. The RazorpayX Payouts adapter is test-mode only; access and end-to-end behavior against RazorpayX have not been verified as part of this audit.
+The repository contains working modules for request and batch loading, vendor-master matching, checks and decisions, SQLite persistence, journal entries, approvals, FakeProvider payment execution and recovery, report generation, audit verification, and a read-only dashboard (`python scripts/dashboard.py`). The dashboard cannot approve or execute payments. The RazorpayX Payouts adapter is test-mode only; access and end-to-end behavior against RazorpayX have not been verified as part of this audit.
 
 This is a prototype, not a demonstrated production or full acceptance build. Crustdata and website adapters exist but are not called by the live matcher. The INR cost conversion for Crustdata credits remains unknown. Dedicated `tests/integration` and `tests/crash` suites are absent, as are scenario fixtures for SC-12 and SC-13. See [TECHNICAL.md](TECHNICAL.md) for observed gaps and [docs/TASKS.md](docs/TASKS.md) for the project plan.
 

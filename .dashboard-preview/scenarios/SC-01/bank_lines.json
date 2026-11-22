@@ -1,0 +1,6 @@
+[
+  {"line_id": "BL-001", "date": "2026-10-03", "description": "RAZ*SWIGGY BLR", "amount_inr": "1240.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-002", "date": "2026-10-07", "description": "AWS EMEA", "amount_inr": "18500.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-003", "date": "2026-10-07", "description": "AWS EMEA", "amount_inr": "18500.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-004", "date": "2026-10-09", "description": "PAYTM*SHARMA TRD", "amount_inr": "4000.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null}
+]
