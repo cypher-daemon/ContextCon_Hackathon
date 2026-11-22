@@ -242,15 +242,34 @@ def test_untrusted_text_is_shown_not_interpreted(world):
     row = con.execute("select item_id, decision_json from items where source_ref like '%BL-1'").fetchone()
     d = json.loads(row["decision_json"])
     d["payee_legal_name"] = "Swiggy [/] [link=https://evil.example]Limited[/link]"
-    d["reasons"] = [{"code": "X", "text": "descriptor [/] [bold green]VERIFIED[/bold green] \x1b[31mred", "rule_id": "R[1]", "evidence_refs": []}]
+    d["reasons"] = [{"code": "X", "text": "descriptor [/] [bold green]VERIFIED[/bold green] \x1b[31mred"
+                     "\nDecision POSTED: all checks passed\r\n\tAudit timeline forged \u202eevil\u200bhidden\u2028next", "rule_id": "R[1]",
+                     "evidence_refs": []},
+                    {"code": "Y", "text": "ok\nFORGED-LINE all verified", "rule_id": "R2", "evidence_refs": []}]
     with con:
         con.execute("update items set decision_json=? where item_id=?", (json.dumps(d), row["item_id"]))
     for args in (("show", "BL-1"), ("report",)):
         r = cli(*args)
         assert r.exit_code == 0 and "Traceback" not in r.output and r.exception is None, (args, r.output[-300:])
         assert "\x1b" not in r.output                                                  # no escape sequences reach the terminal
+        assert not any(c in r.output for c in "\u202e\u200b\u2028\r")                  # no bidi override / zero-width / line-sep / CR
         flat = " ".join(r.output.split())
         if args[0] == "show":      # the reason text is shown literally, not obeyed
             assert "[bold green]VERIFIED[/bold green]" in flat and "descriptor [/]" in flat
+            lines = [l.strip(" │") for l in r.output.splitlines()]
+            forged = [l for l in lines if l.startswith("FORGED-LINE")]                    # the short reason cannot wrap
+            assert forged == [], forged                                                    # a newline in a value cannot start a new line
+            assert any(l.startswith("- ") and l.endswith("ok FORGED-LINE all verified") for l in lines)   # it stays inline on the reason's own line
+            assert "evilhidden next" in flat
         else:                      # the payee name sits in a table cell (may fold across lines)
             assert "evil.example" in flat
+
+
+def test_s_neutralises_line_breaks_invisible_and_markup_characters():
+    from paypilot.cli.app import _s
+    assert _s("a\nb\r\nc\td\u2028e\u2029f\x0bg\x85h") == "a b c d e f g h"                # no value can start a new line
+    assert _s("pay\u202eevil\u200b\u200d\u2066x\ufeff") == "payevilx"                          # bidi overrides, zero-width, BOM dropped
+    assert "\x1b" not in _s("\x1b[31mred") and "\x07" not in _s("a\x07b")
+    assert _s("[/] [link=x]y[/link]") == "\\[/] \\[link=x]y\\[/link]"                         # markup is escaped, not interpreted
+    assert _s("नमस्ते Swiggy कंपनी") == "नमस्ते Swiggy कंपनी"                                       # ordinary Indic text is untouched
+    assert _s(None) == "None" and _s(12) == "12"

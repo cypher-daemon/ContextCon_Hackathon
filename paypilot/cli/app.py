@@ -9,6 +9,7 @@ import dataclasses
 import json
 import re
 import shutil
+import unicodedata
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,13 +38,17 @@ from paypilot.reports.writer import fmt_inr, load_views
 from paypilot.schemas import Operation, Period, RunSummary
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="PayPilot: pay every invoice at most once, never guess a payee.")
-_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_LINEBREAKS = re.compile(r"[\r\n\t\u2028\u2029\x0b\x0c\x85]+")
 
 
 def _s(value) -> str:
-    """Untrusted text (bank descriptors, vendor names, web passages, reasons) is shown, never interpreted: control characters
-    and ANSI escapes are dropped and rich markup is escaped, so `[/]` cannot crash the screen and `[link=...]` cannot spoof it."""
-    return escape(_CTRL.sub("", str(value)))
+    """Untrusted text (bank descriptors, vendor names, web passages, reasons) is shown, never interpreted or obeyed:
+    - line breaks and tabs become one space, so a value cannot forge a new line such as a fake 'Decision: POSTED';
+    - control characters, ANSI escapes and invisible format characters (bidi overrides like U+202E, zero-width, joiners) are dropped,
+      so text cannot be visually reordered or hidden (display only: stored data is untouched);
+    - rich markup is escaped, so `[/]` cannot crash the screen and `[link=...]` cannot spoof it."""
+    text = _LINEBREAKS.sub(" ", str(value))
+    return escape("".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf", "Cs")))
 
 
 console = Console(width=max(shutil.get_terminal_size((120, 20)).columns, 110))
