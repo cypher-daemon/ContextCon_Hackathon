@@ -8,11 +8,12 @@
 - **Money:** integer paise (`amount_paise`). Floats are never used for money. ₹ is shown only in reports.
 - **Time:** timezone-aware. Stored in UTC; shown in IST. Business dates are `date`.
 - **IDs:** deterministic wherever they represent a logical identity (§5), which makes restarts idempotent.
-- **Accounts:** raw bank account numbers exist only inside `io/` while loading. Everywhere else: `account_fingerprint` (HMAC-SHA256 with `BANK_HMAC_KEY`) + `account_last4`.
-- **Purity:** lanes B and C never import `sqlite3`, `stripe` or `anthropic`, and never write files. Only `sources/http.py` may do network I/O, and only through A's ports.
+- **Accounts:** raw bank account numbers exist only inside `io/` while loading, plus one exception: at payout time `io/` re-reads the approved vendor-master row and hands the number, in memory only, to the RazorpayX adapter's request body (§8). Everywhere else: `account_fingerprint` (HMAC-SHA256 with `BANK_HMAC_KEY`) + `account_last4`.
+- **Purity:** lanes B and C never import `sqlite3`, a payment-provider SDK (`razorpay`) or `anthropic`, and never write files. Only `sources/http.py` may do network I/O, and only through A's ports.
 - **No LLM:** inputs are structured CSV/JSON and parsed deterministically. There is no LLM dependency in the product.
 
 ## 2. Input formats (ours: the product's public batch API)
+> **Internal vs external contract.** These formats (§2–3) are PayPilot's **internal** models and stay as they are. They don't replace an input/output format the organizers supply at kickoff. If the kickoff kit specifies a different format, a thin adapter in `io/` (input) and `reports/` (output) maps between the organizer's format and these models (TASKS A18). We don't guess the organizer's schema before it arrives.
 
 ### 2.1 Layout
 ```text
@@ -77,7 +78,7 @@ scenarios/<scenario_id>/
 | `ledger.csv` | Every external call: provider, operation, status, units, ₹ (or UNKNOWN), duration |
 | `audit.jsonl` | The audit events for this run |
 | `journal.csv` / `trial_balance.csv` | Every journal line (entry, account, Dr, Cr, item, decision_hash) and the per-account totals (Σ = 0) |
-| `payment_instructions.csv` | One row per approved payment: payment_key, vendor, account last 4, amount, approval, provider ref and status (this is the file a finance team would release to its bank) |
+| `payment_instructions.csv` | **Audit/reconciliation export, not an instruction to pay.** One row per approved payment: `do_not_execute` (always `TRUE`), payment_key, attempt_key, vendor, account last 4, amount, approval, `provider` (`fake` / `razorpayx_test`), `provider_ref`, `provider_status` (raw, e.g. `processing`), payment `status`, `settlement_status`, `utr` (if any). Every row is written from the DB state at export time, and the payment it describes has **already been submitted through the provider**. Releasing it to a bank would be a second payment. A bank-upload workflow, if ever wanted, is a separate future feature and is not built |
 | `summary.json` | `RunSummary`: counts by outcome, open exceptions, elapsed, cost and `cost_status` |
 
 `results.jsonl` line (default fields):
@@ -101,7 +102,7 @@ class Outcome(StrEnum):        POSTED, AWAITING_APPROVAL, PAID, HELD, CANNOT_VER
 class Proposal(StrEnum):       CANNOT_VERIFY, HELD, AWAITING_APPROVAL, POSTED, RECONCILED   # what decide() may return
 class RunStatus(StrEnum):      RUNNING, COMPLETE, PARTIAL, STOPPED_COST, STOPPED_TIME
 class CheckStatus(StrEnum):    PASS, FAIL, SKIPPED, ERROR, UNKNOWN
-class DateBasis(StrEnum):      RECORD_FIELD, PUBLICATION_DATE, HTTP_DATE_HEADER, FETCH_TIME, FILE_METADATA, UNKNOWN
+class DateBasis(StrEnum):      RECORD_FIELD, PUBLICATION_DATE, FILE_METADATA, UNKNOWN   # how record_date was established; never a retrieval time
 class PaymentStatus(StrEnum):  CREATED, SUBMITTED, PROVIDER_CONFIRMED, FAILED, PAYMENT_UNCERTAIN, RETURNED, REVERSED
 class AttemptStep(StrEnum):    NONE, CREATE_SENT, REF_SAVED, CONFIRM_SENT, DONE
 class SettlementStatus(StrEnum): NOT_AVAILABLE, PENDING, MATCHED, POSSIBLE_MATCH, CONFLICT, UNMATCHED
@@ -149,8 +150,10 @@ class ClientData(BaseModel): client_id: str; vendors: list[Vendor]; pos: list[Pu
 class Source(BaseModel):   source_id: str; provider: str; record_ref: str; fact: str; value: str; field_or_passage: str
                            record_date: date | None; record_date_basis: DateBasis; retrieved_at: datetime
                            limitations: list[str] = []
+# record_date = a date the source itself supplies (field / publication / file metadata); None + UNKNOWN if it supplies none.
+# retrieved_at = when PayPilot retrieved it (HTTP `Date` response header if present, else ctx.clock()). Never copied into record_date.
 # provider ∈ vendor_master | purchase_orders | payment_history | bank_statement | chart_of_accounts | client_policy |
-#            batch_input | razorpay_ifsc | crustdata_identify | company_website_claim | stripe | fake_provider
+#            batch_input | razorpay_ifsc | crustdata_identify | company_website_claim | razorpayx_test | fake_provider
 
 # ---- logic outputs (lanes B, C) ----
 class Resolution(BaseModel): status: Literal["RESOLVED_VENDOR_MASTER","RESOLVED_EXACT_IDENTIFIER","FUZZY_CANDIDATE",
@@ -231,7 +234,7 @@ class RunSummary(BaseModel): run_id: str; request_id: str; client_id: str; opera
 | `item_id` | sha256(client_id \| request_sha \| input_name \| row_no)[:20] |
 | `transaction_fingerprint` | With a bank reference/UTR: sha256("ref" \| bank_reference). Else bank line: sha256(descriptor_key \| amount_paise \| currency \| date \| direction). Invoice: sha256(vendor_name_key \| invoice_no_canonical). A signal, not proof, unless UTR-based |
 | `payment_key` (logical) | `pp_` + sha256(client_id \| vendor_id \| invoice_no_canonical \| amount_paise \| currency)[:32]. **Immutable.** A PAY item without an invoice number is CANNOT_VERIFY (`MISSING_FIELD`) |
-| `attempt_key` (provider) | `{payment_key}:a{n}`; Stripe keys `{attempt_key}:create` / `{attempt_key}:confirm`. n+1 only after a provider-confirmed DECLINED / RETURNED / REVERSED **and** a new approval |
+| `attempt_key` (provider) | `{payment_key}:a{n}`; per-step keys `{attempt_key}:create` / `{attempt_key}:confirm`. n+1 only after a provider-confirmed DECLINED / RETURNED / REVERSED **and** a new approval. RazorpayX's `X-Payout-Idempotency` allows only 4–36 characters (letters, digits, `-`, `_`, space), so the adapter sends `uuid5(PAYPILOT_NS, "{attempt_key}:create")` (36 chars), derived deterministically and never random. `reference_id` = `attempt_key` (≤ 40 chars) |
 | `decision_hash` | sha256(canonical_json(Facts) \| policy.decision_hash_input). The input covers only decision-relevant config (rules, thresholds, mappings, tolerances) + data_hash. **Never timestamps, source ids or output/limit/logging config** |
 | `approval_id` | sha256(item_id \| decision_hash)[:16] |
 | `source_id` | sha256(provider \| record_ref \| fact \| field_or_passage)[:16] (retrieval time excluded) |
@@ -321,8 +324,12 @@ Both are re-read and hashed on every `run`/`resume`/`approve`. `policy_hash` cov
 ```yaml
 # ===== owner A: runtime =====
 limits: {max_runtime_seconds: 600, max_cost_inr: 25.0, max_cost_inr_per_item: 5.0, call_timeout_s: 20}  # request limits: the stricter wins
-payments: {provider: fake, currency: INR, test_payment_method: pm_card_visa, idem_window_h: 23,   # stripe = optional extension
-           refuse_live_keys: true, approve_executes_inline: true}
+payments: {provider: fake, currency: INR, idem_window_h: 23,         # provider ∈ fake | razorpayx_test (no live option exists)
+           refuse_live_keys: true, approve_executes_inline: true,
+           razorpayx_test: {base_url: https://api.razorpay.com/v1, mode: IMPS, purpose: vendor bill,
+                            idem_replay_window_h: 1, call_timeout_s: 20}}
+  # .env (never committed): RAZORPAYX_KEY_ID (must start rzp_test_), RAZORPAYX_KEY_SECRET, RAZORPAYX_ACCOUNT_NUMBER (test-mode Customer Identifier)
+  # idem_replay_window_h: RazorpayX does not document how long an idempotency key is honoured, so this is a conservative assumption (UNVERIFIED)
 approvals: {approvers: [], lock_wait_s: 10}               # [] = any name (declared identity); policy.yaml sets the allowlist
 costs:
   crustdata: {inr_per_credit: null, estimates: {identify: 0.2, web_fetch: 1}}
@@ -417,14 +424,35 @@ class HistoryView(Protocol):     # A implements over SQLite + payment_history; r
     def po_billed_paise(self, po_number, *, before_item) -> int: ...
     def open_critical_for_vendor(self, vendor_id) -> list[str]: ...                  # containment
 # before_item: order = (date, input_name, row_no). The first occurrence proceeds; later ones are held.
-class PaymentProvider(Protocol): # A: payments/fake.py (default, P0); payments/stripe_provider.py (optional extension)
+class PaymentProvider(Protocol): # A: payments/fake.py (default, test target); payments/razorpayx_test.py (P0 if test access verified)
     def create(self, key: str, amount_paise: int, currency: str, metadata: dict) -> ProviderPayment: ...
     def confirm(self, provider_ref: str, key: str) -> ProviderPayment: ...
     def retrieve(self, provider_ref: str) -> ProviderPayment: ...
     def find_by_attempt_key(self, attempt_key: str) -> ProviderPayment | None: ...   # metadata search
     def refund(self, provider_ref: str, key: str) -> ProviderPayment: ...           # only if demonstrated + labelled
 # ProviderPayment(ref, status: REQUIRES_CONFIRMATION|PROCESSING|SUCCEEDED|DECLINED|CANCELED|RETURNED, amount_paise, currency, metadata, raw_ref)
+# An unrecognised provider status → the adapter raises ProviderStatusUnknown → PAYMENT_UNCERTAIN (never mapped to success).
 ```
+
+**RazorpayX test-mode adapter (`payments/razorpayx_test.py`).** It uses the same five methods with no interface change. Sources: RazorpayX Payouts API docs, read 2026-11-22.
+
+| Method | RazorpayX call | Notes |
+|---|---|---|
+| `create` | `POST /v1/payouts` (composite: contact + fund account + payout), basic auth `key_id:key_secret`, header `X-Payout-Idempotency` | Creates **and initiates** the payout in one call, so it returns `PROCESSING` (never `REQUIRES_CONFIRMATION`). `account_number` = `RAZORPAYX_ACCOUNT_NUMBER`. `fund_account.bank_account` comes from the vendor master: at execute time `io/` re-reads the row, checks `HMAC(raw) == approved account_fingerprint` (a mismatch → refuse, `BANK_CHANGED`), and passes the raw number **in memory only**, never logged, stored or hashed into `request_hash`. The body is built deterministically from the payment row + the vendor-master row, because the same key with a different body is rejected (`BAD_REQUEST`) |
+| `confirm` | none: `GET /v1/payouts/{id}` | No money-moving call. It keeps the executor's step sequence unchanged |
+| `retrieve` | `GET /v1/payouts/{id}` | Used by `reconcile_open` |
+| `find_by_attempt_key` | re-send `create` with the **same** idempotency key + identical body, only while the attempt is younger than `idem_replay_window_h`; otherwise returns `None` | Docs: the first response is saved and replayed for the same key. A search by `reference_id` is **not documented**, so we don't rely on it. `None` → PAYMENT_UNCERTAIN; **never create** |
+| `refund` | not supported (payouts aren't refunded) | raises `NotSupported`; recovery stays a human-led recovery case |
+
+| RazorpayX `status` | Terminal? | `ProviderPayment.status` | Payment / item |
+|---|---|---|---|
+| `queued`, `pending`, `scheduled`, `processing` | no | `PROCESSING` | `SUBMITTED` / `PAYMENT_IN_PROGRESS`; re-polled on every `run` / `resume` |
+| `processed` | yes | `SUCCEEDED` | `PROVIDER_CONFIRMED` / `PAID` (settlement still separate) |
+| `rejected`, `cancelled`, `failed` | yes | `DECLINED` / `CANCELED` | `FAILED` → item `HELD`; attempt n+1 only with a fresh approval |
+| `reversed` | yes (docs also mention reversed → failed on RazorpayX current accounts; both are non-success) | `RETURNED` | before success: `FAILED`; after `PROVIDER_CONFIRMED`: `REVERSED` + `REVERSED_PAYMENT` exception |
+| anything else / missing | — | raise | `PAYMENT_UNCERTAIN` |
+
+Test-mode facts relied on: payouts start in `processing` and stay there until someone moves them by hand in the RazorpayX test Dashboard (to `processed`, `failed`, `reversed`, …); test mode uses a dummy balance and no real money. `utr` may be null even when `processed`.
 
 ## 9. Function boundaries between lanes
 ```python
@@ -443,8 +471,8 @@ audit.verify.verify_run(run_id: str, cfg: RunConfig) -> AuditVerifyReport       
 resolve.normalize.descriptor_key(s, policy) -> str; name_key(s, policy) -> str; invoice_canonical(s, policy) -> str
 resolve.matcher.resolve_vendor(item: WorkItem, ctx: StageContext) -> Resolution
 sources.ifsc.lookup(ctx, ifsc: str, item_id: str) -> IfscResult                       # VALID | NOT_FOUND | UNAVAILABLE + Source
-sources.crustdata.identify_by_domain(ctx, domain: str, item_id: str) -> IdentifyResult # P1
-sources.webfetch.fetch_identity_claim(ctx, domain: str, item_id: str) -> IdentityClaim | None  # P1
+sources.crustdata.identify_by_domain(ctx, domain: str, item_id: str) -> IdentifyResult # P0 (SC-08 live-data decision)
+sources.webfetch.fetch_identity_claim(ctx, domain: str, item_id: str) -> IdentityClaim | None  # P0 (SC-08)
 # C
 checks.runner.run_checks(item: WorkItem, resolution: Resolution, ctx: StageContext) -> list[CheckResult]
 decide.engine.decide(item: WorkItem, resolution: Resolution, checks: list[CheckResult], policy: PolicyConfig) -> Decision
@@ -459,7 +487,7 @@ reconciliation.match.three_way(decision: Decision | None, payment: Payment | Non
 ## 10. CLI (`python -m paypilot …`; exit codes 0 ok · 2 invalid input · 3 lock held · 70 persistence failure · 75 stopped at a limit)
 | Command | Args | Behaviour |
 |---|---|---|
-| `run` | `--scenario DIR` or `--request PATH` `[--provider stripe\|fake]` | the same request file is the same run (resume semantics) |
+| `run` | `--scenario DIR` or `--request PATH` `[--provider fake\|razorpayx_test]` | the same request file is the same run (resume semantics) |
 | `resume` | `[--run RUN_ID]` | marks RESERVED ledger rows UNCONFIRMED → reconciles payments → continues |
 | `approvals` | `[--run RUN_ID]` | queue: payee + source, amount, account last 4, three bank statuses, flags, reasons, evidence, open exceptions |
 | `approve` | `ITEM_ID --by NAME [--reason TEXT] [--override FLAG…]` | takes the lock (waits `lock_wait_s`); binds the current decision_hash; refuses NEVER_OVERRIDABLE; an override needs a reason; executes the payment inline |
@@ -471,4 +499,4 @@ reconciliation.match.three_way(decision: Decision | None, payment: Payment | Non
 | `audit verify` | `[--run RUN_ID]` | replays the run from the DB: re-derives every decision_hash from stored facts + policy snapshot; checks approval ↔ payment ↔ journal links, one confirmed attempt per payment key, balanced entries and trial balance, unbroken audit chain, every output fact → stored source. Exit 0 = books verified |
 | `demo reset` | — | wipes `var/` and `out/` (demo/test only; asks for confirmation) |
 
-`PAYPILOT_TEST_AUTOAPPROVE=1` is honoured only with `--provider fake`. `PAYPILOT_CRASH_AT=<point>` is used by the crash tests (FAILURE_MODES §3).
+`PAYPILOT_TEST_AUTOAPPROVE=1` is honoured only with `--provider fake`. With `razorpayx_test`, a missing or non-test credential exits 2 before any work starts; there is never a silent fallback to `fake` or to live mode. `PAYPILOT_CRASH_AT=<point>` is used by the crash tests (FAILURE_MODES §3).

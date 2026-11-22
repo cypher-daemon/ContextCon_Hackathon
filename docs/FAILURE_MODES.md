@@ -48,7 +48,7 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | 22 | Unsupported or missing operation (a "question" request) | request validation | Run-level CANNOT_VERIFY result, exit 0 | INPUT_UNSUPPORTED / LOW | — | `integration/test_unsupported_request.py` |
 | 23 | Provider timeout after create/confirm | exception during call | PAYMENT_UNCERTAIN → reconcile with the **same** key | PROVIDER_OUTCOME_UNKNOWN / HIGH | Reconcile; retry only via a new attempt after a confirmed decline | `crash/test_provider_timeout.py` |
 | 24 | Crash after provider success, before local commit | attempt step=confirm_sent on resume | retrieve → PROVIDER_CONFIRMED; no new call | CRASH_RECOVERY / LOW (audit only) | — | `crash/test_crash_points.py` |
-| 25 | Idempotency window expired, search finds nothing | age > `idem_window_h` | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
+| 25 | Idempotency window expired (RazorpayX: past `idem_replay_window_h`, since its retention is undocumented), lookup finds nothing | attempt age | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
 | 26 | Provider declines | explicit decline | FAILED → item HELD | PAYMENT_FAILED / MEDIUM | Fresh checks + approval → attempt n+1 | `integration/test_decline_then_retry.py` |
 | 27 | Provider confirmed, no statement yet | three-way | settlement PENDING / NOT_AVAILABLE | SETTLEMENT_UNCONFIRMED / LOW (non-blocking) | Wait for the statement | `unit/reconciliation/test_settlement.py` |
 | 28 | Duplicate debit on the statement | two debits ↔ one payment | Contain | DUPLICATE_DEBIT / CRITICAL + recovery case | Bank/provider investigation | `…::dup_debit` |
@@ -63,12 +63,42 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | 37 | Graceful stop (Ctrl-C / SIGTERM) | signal handler | Finish or roll back the current txn; close the session; exit | — | `resume` | `crash/test_sigterm.py` |
 | 38 | kill -9 anywhere | session without ended_at | Resume protocol (§3) | CRASH_RECOVERY / LOW | — | `crash/test_kill_loop.py` |
 | 39 | Output file half-written | — | Always write temp + atomic rename | — | Re-run `report` | `unit/reports/test_atomic_write.py` |
-| 40 | Live payment key configured (if the Stripe extension is enabled) | key prefix `sk_live_` | Refuse to start (exit 2) | — | — | `unit/payments/test_live_key_refused.py` |
+| 40 | Live or non-test RazorpayX key, or missing RazorpayX credentials, with `razorpayx_test` | `RAZORPAYX_KEY_ID` not starting `rzp_test_`; any of the three variables empty; unknown provider name | Refuse to start (exit 2); never fall back to `fake` or live; secrets never printed | — | — | `unit/payments/test_razorpayx_config.py` |
 | 41 | Client data / policy changed mid-run | hash ≠ the run's on resume | Non-final items STALE → re-decide; pending approvals SUPERSEDED; PAID/POSTED untouched | STALE_APPROVAL / HIGH (per affected approval) | New approvals | `integration/test_data_change.py` |
 | 42 | Same case worded differently | — | Identical decision_hash | — | — | `unit/decide/test_consistency.py` |
 | 43 | Malformed batch file (bad JSON/CSV, wrong types, float money) | strict schema at load | Row → ParseFailure → CANNOT_VERIFY (PARSE_FAILED); other rows continue | INPUT_INCOMPLETE / MEDIUM | Corrected file | `unit/io/test_batch_parse.py` |
 | 44 | Books don't replay (decision_hash mismatch, unbalanced entry, orphan payment, broken audit chain) | `audit verify` | Report each discrepancy; exit non-zero | AUDIT_DISCREPANCY / CRITICAL | Investigate; never auto-fix the books | `integration/test_audit_verify.py` |
 | 45 | DB / audit / outbox write fails | exception on commit | **Fail closed before any provider call:** JSONL + stderr, exit 70. (No DB exception row is possible) | PERSISTENCE_FAILURE (log only) | Fix storage; resume | `crash/test_persistence_failure.py` |
+| 46 | Provider acknowledged but not terminal (RazorpayX `queued` / `pending` / `scheduled` / `processing`; FakeProvider `PROCESSING` fault) | status mapping (INTERFACES §8) | Payment stays SUBMITTED, item PAYMENT_IN_PROGRESS; **no PAID, no payment journal entry**; re-polled on every `run` / `resume` | — (the state is visible in `show`/`report`) | Provider reaches a terminal status | `integration/test_provider_pending.py` |
+| 47 | Provider returns an unrecognised or missing status | adapter raises `ProviderStatusUnknown` | PAYMENT_UNCERTAIN | PROVIDER_OUTCOME_UNKNOWN / HIGH | Reconcile by hand | `unit/payments/test_razorpayx_mapping.py::unknown` (recorded fixtures) |
+| 48 | Replay with the same idempotency key is rejected (RazorpayX `BAD_REQUEST`, different body) | 400 on a replayed create | PAYMENT_UNCERTAIN; **no new key, no new create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Reconcile in the test Dashboard | `unit/payments/test_razorpayx_mapping.py::replay_rejected` |
+| 49 | Vendor-master bank account changed between approval and execution | `HMAC(raw) ≠ approved account_fingerprint` at execute | Refuse before any provider call; item HELD | BANK_CHANGE_REQUEST / HIGH | Fresh decision + approval | `integration/test_execute_refingerprint.py` |
+| 50 | Vendor website blocked (Cloudflare challenge / 403) | `cf_markers` / FORBIDDEN | No claim recorded; never a verification | SOURCE_UNAVAILABLE / MEDIUM | Other evidence or onboarding | `unit/sources/test_webfetch.py::blocked` |
+| 51 | Crustdata returns empty or incomplete data (no match, missing name/domain) | parse of a 200 body | Not a verification: VENDOR_ONBOARDING_REQUIRED (HELD) or CANNOT_VERIFY | IDENTITY_UNRESOLVED / MEDIUM | Add to master | `unit/sources/test_crustdata.py::empty` |
+| 52 | Sources disagree on identity (Crustdata company ≠ website claim ≠ billed entity) | matcher comparison | CANNOT_VERIFY (existing `PARENT_BRAND` flag) | LEGAL_ENTITY_MISMATCH / HIGH | Exact-entity evidence | `unit/resolve/test_matcher.py::conflicting_sources` |
+
+### 2.1 Required provider and live-source cases → coverage
+Default tests use the FakeProvider and recorded fixtures/mocks; no external calls. RazorpayX cases marked † are also run once against RazorpayX test mode in SC-13 (opt-in).
+
+| Case | Row(s) | Test |
+|---|---|---|
+| Successful test payout † | — | SC-03 INV-201 (fake); SC-13 (`razorpayx_test`) |
+| Provider rejection † | 26 | `integration/test_decline_then_retry.py`; SC-13 step 4 (Dashboard → `failed`) |
+| Timeout before any response | 23 | `crash/test_provider_timeout.py` |
+| Ambiguous / pending status † | 46, 47 | `integration/test_provider_pending.py`; SC-13 step 2 |
+| Crash after sending, before persisting the response | 24, §3 `after_create_response_before_ref` | `crash/test_crash_points.py`; SC-05 |
+| Restart discovers the existing payout | §3 resume table | SC-05; `crash/test_kill_loop.py` |
+| Duplicate execution for the same logical payment | 31, `payments.payment_key UNIQUE` | `integration/test_approvals.py::double`; kill loop asserts ≤ 1 success per key |
+| Retrieval returns the existing payout | §3 REF_SAVED / CONFIRM_SENT | `crash/test_crash_points.py` |
+| Retrieval cannot establish the outcome | 25, 47, 48 | `crash/test_expired_key_fails_closed.py` |
+| Website blocked / inaccessible | 50 | `unit/sources/test_webfetch.py::blocked` |
+| Empty or incomplete Crustdata response | 51 | `unit/sources/test_crustdata.py::empty` |
+| Conflicting identity information | 15, 52 | `unit/resolve/test_matcher.py` |
+| Crustdata credits exhausted | 11 | `unit/sources/test_http.py::402` |
+| API rate limiting | 10 | `unit/sources/test_http.py::429` |
+| IFSC unavailable | 10 | `unit/sources/test_ifsc.py::unavailable` |
+
+**Rule:** an uncertain payment is never re-submitted with a new key. Only the same key is replayed, and only inside the documented or configured window. A failed lookup is never a successful verification.
 
 ## 3. Crash points and resume protocol (lane A)
 `PAYPILOT_CRASH_AT=<point>` → `os._exit(137)` at:
@@ -84,9 +114,9 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 
 | Attempt state on resume | Within `idem_window_h` | After the window |
 |---|---|---|
-| step=CREATE_SENT, no ref | re-send create with the **same** key → adopt the returned PaymentIntent | `find_by_attempt_key` (×2, ~30 s apart). Found → adopt. Not found → **PAYMENT_UNCERTAIN; never create** |
-| step=REF_SAVED | retrieve → `requires_confirmation` → confirm with the same `:confirm` key | same |
-| step=CONFIRM_SENT | retrieve → SUCCEEDED → PROVIDER_CONFIRMED; DECLINED → FAILED; PROCESSING → poll with backoff | same |
+| step=CREATE_SENT, no ref | re-send create with the **same** key + identical body → adopt the returned payment (RazorpayX: only within `idem_replay_window_h`) | `find_by_attempt_key` (×2, ~30 s apart). Found → adopt. Not found → **PAYMENT_UNCERTAIN; never create** |
+| step=REF_SAVED | retrieve → `requires_confirmation` → confirm with the same `:confirm` key (RazorpayX: never `requires_confirmation`; retrieve only) | same |
+| step=CONFIRM_SENT | retrieve → SUCCEEDED → PROVIDER_CONFIRMED; DECLINED → FAILED; PROCESSING → stay SUBMITTED, poll with backoff, then leave for the next `resume` (#46) | same |
 | provider unreachable | PAYMENT_UNCERTAIN + exception; never infer from silence | same |
 
 | Killed at | Why it's safe |
@@ -96,7 +126,7 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | after_resolve / after_check / after_decide | logic stages are pure; re-running them is harmless |
 | after_post_txn | the journal entry, its lines and the state change are one transaction; `journal_entries UNIQUE(item_id, kind)` |
 | after_approval_commit / after_payment_insert | `payments.item_id` + `payment_key` UNIQUE; the executor picks the row up |
-| after_create_sent / after_create_response_before_ref | the provider (FakeProvider, or Stripe if enabled) returns the same payment for the same key |
+| after_create_sent / after_create_response_before_ref | the provider (FakeProvider, or RazorpayX via `X-Payout-Idempotency`) returns the saved payment for the same key + body; past the replay window → PAYMENT_UNCERTAIN |
 | after_ref_saved / after_confirm_sent / after_confirm_response_before_commit | we retrieve the provider's truth before acting |
 | after_paid_commit | final |
 
@@ -122,7 +152,7 @@ Outcomes:
 - The recovery case is the **single source of truth** for recovery. The payment row only links to it.
 - **To mark RECOVERED you need:** a provider/bank transaction reference, the returned amount + currency, a Source, a timestamp and an actor.
 - **These never count as recovered:** email sent, refund requested, ticket opened, provider acknowledged, local status changed.
-- We don't automate refunds unless `Refund.create` is explicitly demonstrated in test mode and labelled as such.
+- We don't automate refunds. RazorpayX payouts can't be refunded through the payout API, so `refund()` is not supported and recovery stays human-led.
 
 ## 6. Containment rules
 - A blocking exception stops its item's downstream side effects.

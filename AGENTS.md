@@ -29,7 +29,7 @@ Need a contract change? Append to `docs/CONTRACT_CHANGES.md` and tell your human
 
 ## Hard rules
 1. **Pure code:**
-   - No `sqlite3`, `stripe` or `anthropic` imports.
+   - No `sqlite3`, payment-provider SDK (`razorpay`) or `anthropic` imports.
    - Network only via `ctx.ext`; only `sources/http.py` (lane B) may import `httpx`.
    - History only via `ctx.history`.
    - Return drafts (`ExceptionDraft`, `Decision`, …); lane A persists them.

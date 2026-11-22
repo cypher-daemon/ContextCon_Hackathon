@@ -2,7 +2,7 @@
 
 > **PayPilot** is an autonomous bookkeeping and accounts-payable agent for mid-size Indian logistics (3PL) companies. It posts bank lines to the right payee and account, pays approved vendor invoices **at most once** (even through crashes), stops bank-detail fraud, reconciles against bank statements, and keeps **books an auditor can replay line by line**. Its core is **exception management**: knowing when *not* to proceed, explaining why, and giving a human the evidence to resolve it.
 >
-> **Priorities:** correct bookkeeping → vendor resolution and evidence → duplicate and fraud detection → exceptions and approvals → crash-safe state → reconciliation → audit report and CLI demo → *then* (if time) a real payment provider's test mode. **The payment provider is an implementation detail behind an interface.**
+> **Priorities:** correct bookkeeping → vendor resolution and evidence → duplicate and fraud detection → exceptions and approvals → crash-safe state → reconciliation → audit report and CLI demo. A **RazorpayX Payouts test-mode** adapter (vendor payouts, not card charges) is P0 *if* test access is verified (TASKS A9); the FakeProvider stays the deterministic test target. **The payment provider is an implementation detail behind an interface.**
 >
 > **Status:** final design, planning phase. No code yet. Exact contracts are in [`INTERFACES.md`](INTERFACES.md), failure behaviour in [`FAILURE_MODES.md`](FAILURE_MODES.md), the demo world in [`SCENARIOS.md`](SCENARIOS.md).
 > **Precedence:** `HACKATHON_INFORMATION.md` Part A (binding rules) > `docs/DECISIONS.md` > this file > the other docs. Earlier drafts are kept unchanged in `docs/archive/` for history only.
@@ -16,7 +16,7 @@
 | **Job replaced** | The payables clerk / outsourced AP firm that matches bank lines and invoices to vendors, catches duplicates and bank-change fraud, gets approvals, pays, and chases errors. |
 | **Customer (who pays)** | The finance controller of a mid-size 3PL (₹100–1,000 Cr revenue, hundreds of carriers and suppliers). Second segment: outsourced AP / BPO firms serving many 3PLs. This makes the architecture multi-client ready (§12). |
 | **Input** | A **request** (post these bank lines / pay these invoices / reconcile this statement) plus a batch file, checked against the client's **own records**: vendor master (source of truth for legal name, GSTIN, CIN, bank account, IFSC), POs, payment history, chart of accounts. |
-| **Finished result** | Every item ends in exactly one outcome: `POSTED`, `PAID` (test provider, after human approval), `HELD` (with reasons), `CANNOT_VERIFY` (what is missing is named), `REJECTED`, or `PAYMENT_UNCERTAIN` (stop and reconcile). Every blocking issue is a durable **exception**; wrong payments open a **recovery case**. Every fact cites its source, and every external call is in the cost ledger. |
+| **Finished result** | Every item ends in exactly one outcome: `POSTED`, `PAID` (the provider returned its documented successful terminal payout status, after human approval), `HELD` (with reasons), `CANNOT_VERIFY` (what is missing is named), `REJECTED`, or `PAYMENT_UNCERTAIN` (stop and reconcile). Every blocking issue is a durable **exception**; wrong payments open a **recovery case**. Every fact cites its source, and every external call is in the cost ledger. |
 | **Product promise** | Never guess who to pay. Never pay the same invoice twice, even through crashes. Never take an irreversible action without a human. Keep every problem visible until it is resolved with evidence. |
 | **Pass mark** | All scenarios in `SCENARIOS.md` produce their expected outcomes, asserted against the **database, output files and audit log**; the kill -9 loop yields ≤ 1 successful provider payment per invoice; `audit verify` replays every decision and balances the books; every output fact has a source. |
 
@@ -34,13 +34,13 @@ flowchart LR
     CORE[PayPilot service<br/>CLI + pipeline + SQLite]
   end
   REC[(Client records<br/>vendor master, POs, payment history,<br/>chart of accounts, bank statement)]
-  STRIPE[[Payment provider adapter<br/>FakeProvider by default ·<br/>Stripe test mode as optional extension]]
-  IFSC[[Razorpay IFSC API<br/>optional: bank / branch metadata]]
+  PROV[[Payment provider adapter<br/>fake: FakeProvider, local simulation ·<br/>razorpayx_test: RazorpayX Payouts test mode]]
+  IFSC[[Razorpay IFSC API, a separate free lookup<br/>optional: bank / branch metadata]]
   CRU[[Crustdata - the live-data source<br/>company identify by domain, web fetch]]
   OPS -- "run / resume / report" --> CORE
   FIN -- "approve / reject / resolve exception" --> CORE
   REC -- "files, re-read every run" --> CORE
-  CORE -- "create / confirm / retrieve<br/>(idempotency keys)" --> STRIPE
+  CORE -- "create payout / retrieve<br/>(idempotency keys)" --> PROV
   CORE -- "GET /{IFSC}" --> IFSC
   CORE -- "identify(domain), fetch(url)" --> CRU
   CORE -- "results, report, exceptions, ledger, audit" --> OPS
@@ -50,7 +50,7 @@ flowchart LR
 1. The **client's records** are trusted as the source of truth for vendor identity and bank details, but are still validated (duplicates and conflicts inside the vendor master are exceptions).
 2. **Live sources** are evidence of specific facts only: IFSC → bank and branch; Crustdata → the company behind a domain; a company website → a self-published claim.
 3. **Batch input** (bank lines, invoices, vendor emails) is untrusted. A changed bank account in an invoice is treated as possible fraud.
-4. The **payment provider** is the only system that can move money. We never assume what it did; we ask it. PayPilot works against the `PaymentProvider` interface: a **FakeProvider** with its own durable store (it simulates success, decline, timeout, and "accepted just before we crashed") is the default, and a real test-mode provider (Stripe) plugs in behind the same interface if time allows.
+4. The **payment provider** is the only system that can move money. We never assume what it did; we ask it. PayPilot works against the `PaymentProvider` interface: a **FakeProvider** with its own durable store (it simulates success, decline, timeout, and "accepted just before we crashed") is the default and the test target. The real test-mode provider is **RazorpayX Payouts in test mode** (`razorpayx_test`): its sandbox simulates a vendor payout with a dummy balance and moves no real money. It is not the Razorpay Payment Gateway, and Payment Links are never used as payouts. FakeProvider is our own simulation, not a provider sandbox. RazorpayX live mode is unsupported: live keys are refused and there is no fallback between providers.
 5. **No LLM.** All inputs are structured CSV/JSON; every decision is deterministic code.
 
 ---
@@ -148,6 +148,16 @@ flowchart TD
 | Execute | Persist intent → call provider with an idempotency key → persist the result → write the balanced journal entry | Retry blindly; infer success or failure from silence |
 | Reconcile | Compares what we intended, what the provider did, what the bank shows | Call "provider-confirmed" "settled" |
 
+**Three separate events, never interchangeable:**
+
+| Event | Where recorded | Means | Does **not** mean |
+|---|---|---|---|
+| Local posting | item `POSTED`; journal `BANK_LINE_POSTING` / `INVOICE_ACCRUAL` | PayPilot wrote a balanced entry in its own books | Any money moved |
+| Provider-confirmed payout | payment `PROVIDER_CONFIRMED` → item `PAID`; journal `INVOICE_PAYMENT` (Cr Bank – payments clearing) | The provider returned its **documented successful terminal status** (RazorpayX `processed`; FakeProvider `SUCCEEDED`) | Bank settlement. In RazorpayX test mode it also means no real money moved |
+| Bank settlement | `payments.settlement_status` (`MATCHED` …), from a supplied bank statement (§4 Reconcile) | The bank statement shows the debit | — |
+
+An item is **never** `PAID` because it was approved, a payout request was sent, the provider acknowledged it (RazorpayX `queued` / `pending` / `scheduled` / `processing`), or an export file was written. Until a terminal status arrives the item stays `PAYMENT_IN_PROGRESS` (payment `SUBMITTED`) and every `run` / `resume` re-polls it. The status mapping is in INTERFACES §8.
+
 ---
 
 ## 5. Exactly-once payments (the core robustness argument)
@@ -157,11 +167,11 @@ flowchart TD
 **How:**
 1. **Two keys:**
    - The **logical payment key** = hash(client, vendor, canonical invoice no., amount, currency). It never changes and has a local UNIQUE constraint.
-   - The **provider attempt key** = logical key + `:a<n>`. Attempt *n+1* is allowed only after the provider has *confirmed* that attempt *n* failed or was returned, and only with a fresh approval. (Stripe replays the original response for a reused key, declines included, so a retry after a real decline needs a new attempt key.)
+   - The **provider attempt key** = logical key + `:a<n>`. Attempt *n+1* is allowed only after the provider has *confirmed* that attempt *n* failed or was returned, and only with a fresh approval. (RazorpayX documents that a payout in a failed state means every request with that idempotency key has failed, and that retrying with a fresh key while the first is still processing can pay twice. So a new attempt key comes only after a provider-confirmed terminal failure.)
 2. **Outbox:** the payment row is committed *after* approval and *before* any provider call.
-3. **Two-step provider call:** create the PaymentIntent (not confirmed) → **persist its id** → confirm. Each step has its own provider idempotency key. A `step` column records which call may have landed.
+3. **Provider call, recorded step by step:** `create` → **persist the provider ref** → `confirm`. Each step has its own provider idempotency key, and a `step` column records which call may have landed. FakeProvider uses a real two-step create/confirm. RazorpayX creates and initiates the payout in **one** call (`POST /v1/payouts`, header `X-Payout-Idempotency`). Its `confirm()` makes no money-moving call: it only retrieves status (INTERFACES §8).
 4. **Reconcile before acting:** every `run`, `resume` and `approve` reconciles open payments with the provider *before* any new work.
-5. **Fail closed:** if the provider is unreachable, or the idempotency window has expired and a search finds nothing, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
+5. **Fail closed:** if the provider is unreachable, returns an unrecognised status, or the idempotency window has expired (or, for RazorpayX, is undocumented) and no lookup can prove the outcome, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
 6. **Containment:** while a CRITICAL payment exception is open for a vendor, no new payment to that vendor can be queued.
 
 ```mermaid
@@ -170,20 +180,21 @@ sequenceDiagram
   actor Approver
   participant CLI as PayPilot CLI
   participant DB as SQLite (WAL)
-  participant ST as Payment provider (FakeProvider / Stripe test)
+  participant ST as Payment provider (FakeProvider shown; RazorpayX test differs as noted)
   Approver->>CLI: approve ITEM --by "Controller"
   CLI->>DB: txn: approval APPROVED (decision_hash) + payment CREATED + audit
   CLI->>DB: step=create_sent
-  CLI->>ST: create PaymentIntent (Idempotency-Key: K:a1:create)
+  CLI->>ST: create payment (idempotency key derived from K:a1:create)
   Note over CLI: kill -9 here (response lost)
   Approver->>CLI: resume
   CLI->>DB: open payments? → step=create_sent, no ref
   CLI->>ST: create again with SAME key
-  ST-->>CLI: same payment pi_123 (replayed, no new charge)
-  CLI->>DB: provider_ref=pi_123, step=ref_saved
+  ST-->>CLI: same payment ref_123 (replayed, no new payment)
+  CLI->>DB: provider_ref=ref_123, step=ref_saved
   CLI->>DB: step=confirm_sent
-  CLI->>ST: confirm pi_123 (Idempotency-Key: K:a1:confirm)
-  ST-->>CLI: succeeded
+  CLI->>ST: confirm ref_123 (FakeProvider) / retrieve status (RazorpayX)
+  ST-->>CLI: documented successful terminal status
+  Note over CLI,ST: RazorpayX acknowledged statuses (queued, processing…) keep the payment SUBMITTED; resume re-polls
   CLI->>DB: txn: payment PROVIDER_CONFIRMED + item PAID + audit
   CLI->>CLI: three-way reconcile → settlement PENDING (no statement yet)
 ```
@@ -328,17 +339,17 @@ The full DDL, with every UNIQUE constraint that enforces "at most once", is in [
 Every factual claim in the output is a `Source`:
 - provider and record reference
 - the **exact field or quoted passage** (for passages, the value must appear in the quote)
-- the record's own date, with its **basis** (`RECORD_FIELD`, `PUBLICATION_DATE`, `HTTP_DATE_HEADER`, `FETCH_TIME`, `FILE_METADATA`, `UNKNOWN`)
-- when we retrieved it
+- `record_date`: a date the source itself supplies for the record, with its **basis** (`RECORD_FIELD`, `PUBLICATION_DATE`, `FILE_METADATA`, or `UNKNOWN` with `record_date = null` when the source gives none; we never invent one)
+- `retrieved_at`: when PayPilot retrieved it. The HTTP `Date` response header, or our clock, sets **only** this field. It is never a record date.
 - its limitations
 
 | Source | Proves | Does **not** prove |
 |---|---|---|
 | Client vendor master | Legal name, identifiers, approved bank account, default account (as of its `last_updated`) | That the vendor still uses that account |
-| Razorpay IFSC | The IFSC exists and maps to a bank and branch (retrieval time from the HTTP `Date` header) | Who owns an account at that branch |
+| Razorpay IFSC | The IFSC exists and maps to a bank and branch (no record date; `retrieved_at` from the HTTP `Date` header) | Who owns an account at that branch |
 | Crustdata Identify (by domain) | A company is associated with that domain | The legal entity that issued the invoice (it often returns the parent brand) |
 | Company website passage | The website **claims** a legal name / CIN (self-published) | Registry status |
-| Payment provider (FakeProvider; Stripe test if enabled) | The provider accepted, declined or confirmed the payment action | A real vendor bank payout (a Stripe PaymentIntent is a card-charge simulation) or bank settlement |
+| Payment provider (FakeProvider, or RazorpayX test mode) | The provider's status for the payout (RazorpayX `pout_…` id, `status`, `utr` if present; `created_at` as `RECORD_FIELD`) | Real money movement (test mode uses a dummy balance) or bank settlement. FakeProvider output is our own simulation |
 
 Bank verification is always shown as **three separate statuses**: `ifsc_valid`, `account_matches_master`, `ownership_verified` (always `NOT_VERIFIED`, because no source we use proves ownership).
 
@@ -383,7 +394,7 @@ The full matrix is in [`FAILURE_MODES.md`](FAILURE_MODES.md).
 | 3 | Store | SQLite WAL, `synchronous=FULL`, single-instance lock | Postgres; JSON files | Atomic multi-row transactions, zero setup. Trade-off: one writer (fine now; Postgres at scale) |
 | 4 | Lifecycles | Item, payment, exception and recovery as separate machines | One merged enum | A payment can succeed while its exception stays open |
 | 5 | Payment identity | Logical key + provider attempt key | Approval- or version-suffixed keys; DB-only uniqueness | No override, retry or restart can create a second success, yet a confirmed failure can still be retried safely |
-| 6 | Provider | `PaymentProvider` interface; **FakeProvider** (durable, fault-injecting) is the foundation; Stripe test mode is an optional extension, labelled "test card-charge simulation" | Build around Stripe; Razorpay Payments (needs browser Checkout); RazorpayX Payouts (true payouts but KYC) | Correctness doesn't depend on any gateway or credentials. A real test-mode provider is a plug-in, not the foundation |
+| 6 | Provider | `PaymentProvider` interface; **FakeProvider** (durable, fault-injecting) is the deterministic test target; **RazorpayX Payouts test mode** is the real provider adapter (`razorpayx_test`). Live mode unsupported | *Discarded:* Stripe PaymentIntents (charges a customer's card; not a vendor payout); Razorpay Payment Gateway / Payment Links (collect money, don't pay vendors); FakeProvider only (not a real provider) | PayPilot pays vendors, so the provider operation must be a payout. Correctness is still proven on the FakeProvider, so no test depends on credentials |
 | 7 | Identity | Client master first; Crustdata by **domain** only; tie / lookalike / parent brand → CANNOT_VERIFY | Name-based lookup; embeddings or an LLM judge | Probes showed 3 different "Sharma Traders" at confidence 1.0. A wrong payee is worse than "cannot verify" |
 | 8 | Decisions | Flags → declarative rules in config → all reasons | Rules DSL / eval; LLM | Reproducible `decision_hash`; explainable; same facts → same answer |
 | 9 | Decision hash | Normalized facts + decision-policy config only | Hash everything, including evidence timestamps | Re-fetching a source or editing output config doesn't silently invalidate approvals |
@@ -407,7 +418,7 @@ flowchart LR
     W3[reconciler: provider webhooks + statements]
   end
   Q --> W1 --> PG[(Postgres: same schema,<br/>client_id in every key, row-level security)]
-  PG --> W2 --> PROV[[providers: RazorpayX payouts / Stripe]]
+  PG --> W2 --> PROV[[provider: RazorpayX Payouts<br/>live mode only after a separate production decision]]
   PROV -- webhooks --> W3 --> PG
   W1 --> RL[(Redis: shared per-endpoint rate limiter + response cache)]
   PG --> UI[approver web app + SSO + maker-checker]
@@ -429,12 +440,12 @@ flowchart LR
   - Only the needed vendor-master columns are loaded.
   - Bank account numbers become HMAC fingerprints (key in `.env`) + last 4 at load time; the full number is never stored or logged.
   - No data about individual people is stored.
-  - No LLM is called, so no client text leaves the system except domain lookups to Crustdata.
+  - No LLM is called, so no client text leaves the system except domain lookups to Crustdata and, for an approved payout in `razorpayx_test`, the payee's name, IFSC and account number sent to RazorpayX test mode (in memory only, never logged).
 - **Human control:** every payment needs a named approver. Approvers come from the client policy's allowlist (`approvers:`); this is identity by declaration in the hackathon build, with SSO in production. Overrides need a written reason, and some flags can never be overridden.
 - **Honest claims:**
   - The output never says "verified" when a source only *claims* something.
   - "Provider-confirmed" is never called "settled", and "recovery requested" is never called "recovered".
-- **Secrets:** only in `.env`; live payment keys (`sk_live_`) are refused at startup; test mode only.
+- **Secrets:** only in `.env`; with `razorpayx_test`, any key that isn't a test key (`rzp_test_` prefix) is refused at startup and the run prints `Payment provider: RazorpayX TEST MODE (no real money)`; secrets are never logged; test mode only.
 - **Explainability:** every decision lists every reason, rule and source; `show` gives the full chain; decisions are reproducible from the recorded facts.
 
 The buyer, pricing and the ethics narrative are in [`BUSINESS.md`](BUSINESS.md).

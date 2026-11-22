@@ -7,7 +7,7 @@
 > 2. **Database:** `expected_db.json` gives row counts and key fields per table (items by state, journal entries and lines balanced, approvals, payments + attempts, exceptions by type and severity, recovery cases, ledger rows by provider).
 > 3. **Audit log:** the expected sequence of `audit_events` transitions per item, and `audit verify` exits 0.
 >
-> No scenario needs Stripe, real payment data or an LLM. Payments go through the durable **FakeProvider** unless `payments.provider: stripe` is set.
+> SC-01…SC-12 need no provider credentials, real payment data or LLM: payments go through the durable **FakeProvider** (our own simulation, labelled as such). SC-13 runs the same payment through **RazorpayX Payouts test mode** (`payments.provider: razorpayx_test`) and is opt-in (`pytest -m razorpayx`, needs test credentials).
 > All dates are after **1 Sep 2026**. Today's demo date is 22 Nov 2026.
 
 ## 1. Data honesty rules (ethics)
@@ -65,7 +65,7 @@
 ### SC-03 Carrier invoice run, `PAY_INVOICES`
 | Invoice | Input | Expected |
 |---|---|---|
-| INV-201 | Delhivery Limited, `DLV/2026-27/00418`, ₹48,000, PO-NB-1042, qty 12, remit = master account | **AWAITING_APPROVAL** → `approve --by "Finance Controller"` → **PAID** (payment provider: FakeProvider, or Stripe test if enabled) · journal: accrual (Dr Freight - carriers / Cr AP-Delhivery) + payment (Dr AP-Delhivery / Cr Bank clearing) · bank_status: ifsc_valid=PASS (live; NOT_CHECKED if IFSC disabled), account_matches_master=PASS, ownership_verified=NOT_VERIFIED |
+| INV-201 | Delhivery Limited, `DLV/2026-27/00418`, ₹48,000, PO-NB-1042, qty 12, remit = master account | **AWAITING_APPROVAL** → `approve --by "Finance Controller"` → **PAID** once the provider returns its terminal success (FakeProvider here; RazorpayX test mode in SC-13) · journal: accrual (Dr Freight - carriers / Cr AP-Delhivery) + payment (Dr AP-Delhivery / Cr Bank clearing) · bank_status: ifsc_valid=PASS (live; NOT_CHECKED if IFSC disabled), account_matches_master=PASS, ownership_verified=NOT_VERIFIED |
 | INV-202 | Blue Dart, `BDE-26-27-07781` (reformatted `BDE/26-27/7781`), ₹22,500 | **HELD**: ALREADY_PAID (payment history `hist-0091`), not overridable |
 | INV-203 | VRL Logistics, `VRL/11/2026/0332`, ₹64,800 vs PO-NB-1043 ₹60,000 | **HELD**: PO_AMOUNT_MISMATCH (+8.0%, over 1.0% tolerance), overridable |
 | INV-204 | "Delhivery Logistics Pvt", `DLP-5521`, ₹31,000, no GSTIN/domain | **CANNOT_VERIFY**: LOOKALIKE (candidate Delhivery Limited; differs by "LOGISTICS") |
@@ -83,8 +83,8 @@
 | Step | Expected |
 |---|---|
 | `approve INV-201` with `PAYPILOT_CRASH_AT=after_create_response_before_ref` (or the judge's random kill) | process dies |
-| `resume` | "reconciled attempt pp_…:a1: PaymentIntent pi_… found via same idempotency key; 0 new payments"; item PAID |
-| Provider record (FakeProvider DB; the Stripe test dashboard if enabled) | **exactly one** successful payment for that invoice; `payment_instructions.csv` has one row; journal has one payment entry; `audit verify` passes |
+| `resume` | "reconciled attempt pp_…:a1: provider payment found via same idempotency key; 0 new payments"; item PAID |
+| Provider record (FakeProvider DB; the RazorpayX test Dashboard in SC-13) | **exactly one** successful payment for that invoice; `payment_instructions.csv` has one row (`do_not_execute=TRUE`, provider ref + status); journal has one payment entry; `audit verify` passes |
 
 ### SC-06 Provider timeout → uncertain → reconciled (FakeProvider fault injection)
 | Step | Expected |
@@ -92,6 +92,7 @@
 | FakeProvider **accepts** the confirm, then the response times out (accepted just before we lose contact) | item PAYMENT_UNCERTAIN; exception PROVIDER_OUTCOME_UNKNOWN (HIGH); **no journal payment entry yet** |
 | `resume` with the provider back | retrieve → SUCCEEDED → PAID; exception RESOLVED with the provider ref as evidence |
 | Variant: idempotency window expired + search empty | stays PAYMENT_UNCERTAIN; **no new create** |
+| Variant: FakeProvider answers `PROCESSING` (acknowledged, not terminal) | payment SUBMITTED, item PAYMENT_IN_PROGRESS, **not PAID**, no payment journal entry; the next `resume` after the fault clears → PAID |
 
 ### SC-07 Post-payment reconciliation, `RECONCILE` (statement for 1–20 Nov)
 | Statement line | Expected |
@@ -129,6 +130,17 @@ After SC-01…SC-11, run `audit verify` over every run.
 | Exit 0. Every decision_hash re-derives from the stored facts + policy snapshot; every PAID item ↔ one approval ↔ one confirmed attempt ↔ one payment journal entry; trial balance Σ = 0; every output fact → a stored source | the `audit verify` report |
 | Tamper test: edit one journal line's amount in a copy of the DB → `audit verify` exits non-zero and names the entry | `tests/integration/test_audit_verify.py` |
 
+### SC-13 RazorpayX test-mode vendor payout (opt-in: `--provider razorpayx_test`, needs H7)
+Runs SC-03 INV-201 against RazorpayX Payouts **test mode**: a dummy balance, no real money, no bank settlement. The vendor's bank details are the fictional fixture account; RazorpayX test mode accepts dummy details.
+
+| Step | Expected | Asserted on |
+|---|---|---|
+| 1. Startup | prints `Payment provider: RazorpayX TEST MODE (no real money)`; a non-`rzp_test_` key → exit 2 | stdout / exit code |
+| 2. `approve INV-201 --by "Finance Controller"` | one `POST /v1/payouts` with `X-Payout-Idempotency`; `provider_ref = pout_…` persisted; RazorpayX status `processing` → payment SUBMITTED, item **PAYMENT_IN_PROGRESS (not PAID)**; no payment journal entry | DB, `payment_instructions.csv` (`provider_status=processing`), ledger row `razorpayx_test` |
+| 3. Move the payout to `processed` in the test Dashboard → `resume` | retrieve → `processed` → PROVIDER_CONFIRMED / **PAID**; INVOICE_PAYMENT journal entry; settlement NOT_AVAILABLE | DB, audit, `audit verify` |
+| 4. Variant: move it to `failed` (or `reversed`) instead | FAILED → item HELD; the same key is never re-sent as a new payout | DB, exceptions |
+| 5. Crash drill: `PAYPILOT_CRASH_AT=after_create_response_before_ref` then `resume` | the same idempotency key + body is replayed → the same `pout_…`; the Dashboard shows **one** payout | Dashboard, DB |
+
 ## 4. Coverage of the team's required test cases
 | Required case | Scenario |
 |---|---|
@@ -143,6 +155,7 @@ After SC-01…SC-11, run `audit verify` over every run.
 | Duplicate bank transaction | SC-01 BL-003; SC-07 duplicate debit |
 | Crash during payment execution | SC-05 + the kill loop (30 random kills) |
 | Timeout after the provider accepted | SC-06 |
+| Real provider test-mode payout | SC-13 |
 | The four official bank lines | SC-01 |
 
 ## 5. Acceptance map (Part A rules)
@@ -154,7 +167,7 @@ After SC-01…SC-11, run `audit verify` over every run.
 | Every fact sourced | every `expected.jsonl` row asserts its `sources[]` |
 | Live data in a decision | SC-08: Crustdata identify by domain + web fetch (P0). IFSC lookup in SC-03 / SC-04 is an optional extra check |
 | Approval before an irreversible action | SC-03 INV-201; SC-04 shows no payment row without approval |
-| Payment provider test mode | FakeProvider (P0, durable, fault-injecting) in every scenario; Stripe test mode via the same interface if time permits (P2), labelled a card-charge simulation |
+| Payment provider test mode | SC-13: RazorpayX Payouts test mode (P0, needs H7). FakeProvider (durable, fault-injecting, labelled as a simulation) for every deterministic scenario. Without H7 the requirement is **not met**, and we say so |
 | Time and cost limits, per-call cost | SC-09; `ledger` after every scenario |
 | Kill and restart, each action once | SC-05 + `tests/crash/test_kill_loop.py` (30 random kills) |
 | Exception management | SC-04, SC-06, SC-07, SC-11 |
