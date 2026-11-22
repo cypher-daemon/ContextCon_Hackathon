@@ -128,3 +128,23 @@ def test_pages_and_assets_are_served_and_nothing_else(db):
             assert status(bad) == 404, bad
     finally:
         srv.shutdown(); srv.server_close()
+
+
+def test_one_request_sees_one_snapshot_even_if_a_write_lands_mid_build(db, monkeypatch):
+    writer = sqlite3.connect(db)
+    real_rows, fired = dash.rows, []
+
+    def rows_then_write(con, sql, *args):
+        out = real_rows(con, sql, *args)
+        if not fired:                                    # a payment commits right after the first query
+            fired.append(1)
+            writer.execute("UPDATE items SET state='PAID' WHERE item_id='held1'")
+            writer.commit()
+        return out
+
+    monkeypatch.setattr(dash, "rows", rows_then_write)
+    s = dash.build_state(db, "R1")
+    assert fired and {i["item_id"]: i["state"] for i in s["items"]}["held1"] == "HELD"   # still the pre-write snapshot
+    monkeypatch.setattr(dash, "rows", real_rows)
+    assert {i["item_id"]: i["state"] for i in dash.build_state(db, "R1")["items"]}["held1"] == "PAID"  # next poll sees it
+    writer.close()
