@@ -63,11 +63,12 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | 37 | Graceful stop (Ctrl-C / SIGTERM) | signal handler | Finish or roll back the current txn; close the session; exit | — | `resume` | `crash/test_sigterm.py` |
 | 38 | kill -9 anywhere | session without ended_at | Resume protocol (§3) | CRASH_RECOVERY / LOW | — | `crash/test_kill_loop.py` |
 | 39 | Output file half-written | — | Always write temp + atomic rename | — | Re-run `report` | `unit/reports/test_atomic_write.py` |
-| 40 | Live Stripe key configured | key prefix `sk_live_` | Refuse to start (exit 2) | — | — | `unit/payments/test_live_key_refused.py` |
+| 40 | Live payment key configured (if the Stripe extension is enabled) | key prefix `sk_live_` | Refuse to start (exit 2) | — | — | `unit/payments/test_live_key_refused.py` |
 | 41 | Client data / policy changed mid-run | hash ≠ the run's on resume | Non-final items STALE → re-decide; pending approvals SUPERSEDED; PAID/POSTED untouched | STALE_APPROVAL / HIGH (per affected approval) | New approvals | `integration/test_data_change.py` |
 | 42 | Same case worded differently | — | Identical decision_hash | — | — | `unit/decide/test_consistency.py` |
-| 43 | LLM extraction invalid (P2) | schema validation | Retry once → regex fallback → PARSE_FAILED → CANNOT_VERIFY | INPUT_INCOMPLETE / MEDIUM | — | `unit/sources/test_llm.py` |
-| 44 | DB / audit / outbox write fails | exception on commit | **Fail closed before any provider call:** JSONL + stderr, exit 70. (No DB exception row is possible) | PERSISTENCE_FAILURE (log only) | Fix storage; resume | `crash/test_persistence_failure.py` |
+| 43 | Malformed batch file (bad JSON/CSV, wrong types, float money) | strict schema at load | Row → ParseFailure → CANNOT_VERIFY (PARSE_FAILED); other rows continue | INPUT_INCOMPLETE / MEDIUM | Corrected file | `unit/io/test_batch_parse.py` |
+| 44 | Books don't replay (decision_hash mismatch, unbalanced entry, orphan payment, broken audit chain) | `audit verify` | Report each discrepancy; exit non-zero | AUDIT_DISCREPANCY / CRITICAL | Investigate; never auto-fix the books | `integration/test_audit_verify.py` |
+| 45 | DB / audit / outbox write fails | exception on commit | **Fail closed before any provider call:** JSONL + stderr, exit 70. (No DB exception row is possible) | PERSISTENCE_FAILURE (log only) | Fix storage; resume | `crash/test_persistence_failure.py` |
 
 ## 3. Crash points and resume protocol (lane A)
 `PAYPILOT_CRASH_AT=<point>` → `os._exit(137)` at:
@@ -93,9 +94,9 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | after_ingest | deterministic item_id + INSERT OR IGNORE |
 | after_reserve / after_ext_response_before_cache | the UNCONFIRMED row counts at its estimate; a re-call is attempt+1 (spend is never under-reported) |
 | after_resolve / after_check / after_decide | logic stages are pure; re-running them is harmless |
-| after_post_txn | the posting row and the state change are one transaction; `postings.item_id` UNIQUE |
+| after_post_txn | the journal entry, its lines and the state change are one transaction; `journal_entries UNIQUE(item_id, kind)` |
 | after_approval_commit / after_payment_insert | `payments.item_id` + `payment_key` UNIQUE; the executor picks the row up |
-| after_create_sent / after_create_response_before_ref | Stripe returns the same PaymentIntent for the same key |
+| after_create_sent / after_create_response_before_ref | the provider (FakeProvider, or Stripe if enabled) returns the same payment for the same key |
 | after_ref_saved / after_confirm_sent / after_confirm_response_before_commit | we retrieve the provider's truth before acting |
 | after_paid_commit | final |
 

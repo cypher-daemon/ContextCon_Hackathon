@@ -9,7 +9,8 @@
 - **Time:** timezone-aware. Stored in UTC; shown in IST. Business dates are `date`.
 - **IDs:** deterministic wherever they represent a logical identity (§5), which makes restarts idempotent.
 - **Accounts:** raw bank account numbers exist only inside `io/` while loading. Everywhere else: `account_fingerprint` (HMAC-SHA256 with `BANK_HMAC_KEY`) + `account_last4`.
-- **Purity:** lanes B and C never import `sqlite3`, `stripe` or `anthropic`, and never write files. Only `sources/http.py` and `sources/llm.py` may do network I/O, and only through A's ports.
+- **Purity:** lanes B and C never import `sqlite3`, `stripe` or `anthropic`, and never write files. Only `sources/http.py` may do network I/O, and only through A's ports.
+- **No LLM:** inputs are structured CSV/JSON and parsed deterministically. There is no LLM dependency in the product.
 
 ## 2. Input formats (ours: the product's public batch API)
 
@@ -75,6 +76,8 @@ scenarios/<scenario_id>/
 | `exceptions.jsonl` | Every exception with its recovery case, if any |
 | `ledger.csv` | Every external call: provider, operation, status, units, ₹ (or UNKNOWN), duration |
 | `audit.jsonl` | The audit events for this run |
+| `journal.csv` / `trial_balance.csv` | Every journal line (entry, account, Dr, Cr, item, decision_hash) and the per-account totals (Σ = 0) |
+| `payment_instructions.csv` | One row per approved payment: payment_key, vendor, account last 4, amount, approval, provider ref and status (this is the file a finance team would release to its bank) |
 | `summary.json` | `RunSummary`: counts by outcome, open exceptions, elapsed, cost and `cost_status` |
 
 `results.jsonl` line (default fields):
@@ -191,6 +194,13 @@ class ExceptionRecord(ExceptionDraft): exception_id: str; run_id: str; status: E
 class RecoveryCase(BaseModel): recovery_id: str; exception_id: str; payment_id: str; reason: str; requested_action: str
                            status: RecoveryStatus; external_ref: str | None; evidence_refs: list[str]
                            recovered_amount_paise: int | None
+class JournalLine(BaseModel): line_no: int; account: str; debit_paise: int; credit_paise: int
+class JournalEntry(BaseModel): entry_id: str; item_id: str
+                           kind: Literal["BANK_LINE_POSTING","INVOICE_ACCRUAL","INVOICE_PAYMENT","REVERSAL"]
+                           vendor_id: str | None; decision_hash: str; approval_id: str | None; attempt_key: str | None
+                           currency: str; memo: str; posted_at: datetime; lines: list[JournalLine]   # Σ debit == Σ credit (validator)
+class AuditVerifyReport(BaseModel): run_id: str; ok: bool; items_checked: int; decisions_replayed: int
+                           discrepancies: list[dict[str, Any]]; trial_balance: dict[str, int]
 class AuditEvent(BaseModel): event_id: int; run_id: str; session_id: str; entity_type: str; entity_id: str
                            previous_state: str | None; new_state: str | None; actor: str; reason: str | None
                            metadata: dict[str, Any]; ts: datetime
@@ -205,7 +215,7 @@ class LedgerSummary(BaseModel): run_id: str; total_inr: float | None; cost_statu
                            limit_inr: float; zero_cost_items_pct: float
 class ItemResult(BaseModel): run_id: str; item: WorkItem | ParseFailure; state: ItemState; outcome: Outcome | None
                            decision: Decision | None; approval: Approval | None; payment: Payment | None
-                           attempts: list[PaymentAttempt]; exceptions: list[ExceptionRecord]; evidence: list[Source]
+                           attempts: list[PaymentAttempt]; journal: list[JournalEntry]; exceptions: list[ExceptionRecord]; evidence: list[Source]
                            cost_inr: float | None
 class RunSummary(BaseModel): run_id: str; request_id: str; client_id: str; operation: Operation | None; status: RunStatus
                            counts: dict[str, int]; open_exceptions: dict[str, int]; sessions: int; recovered_from_crash: bool
@@ -232,7 +242,9 @@ class RunSummary(BaseModel): run_id: str; request_id: str; client_id: str; opera
 ```sql
 PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
 CREATE TABLE runs (run_id TEXT PRIMARY KEY, client_id TEXT NOT NULL, request_id TEXT NOT NULL, request_sha TEXT NOT NULL,
-  operation TEXT, config_hash TEXT NOT NULL, policy_hash TEXT NOT NULL, data_hash TEXT NOT NULL, status TEXT NOT NULL,
+  operation TEXT, config_hash TEXT NOT NULL, policy_hash TEXT NOT NULL, data_hash TEXT NOT NULL,
+  policy_snapshot_json TEXT NOT NULL,   -- exact merged config + policy used; audit verify replays decisions from it
+  status TEXT NOT NULL,
   started_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(client_id, request_sha));
 CREATE TABLE sessions (session_id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs, command TEXT NOT NULL,
   pid INTEGER, started_at TEXT NOT NULL, ended_at TEXT, exit_code INTEGER);
@@ -257,8 +269,14 @@ CREATE TABLE audit_events (event_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, s
   entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, previous_state TEXT, new_state TEXT, actor TEXT NOT NULL,
   reason TEXT, metadata_json TEXT NOT NULL, ts TEXT NOT NULL);
 CREATE INDEX ix_audit_entity ON audit_events(entity_type, entity_id, event_id);
-CREATE TABLE postings (posting_id TEXT PRIMARY KEY, item_id TEXT NOT NULL UNIQUE REFERENCES items, vendor_id TEXT,
-  account TEXT NOT NULL, amount_paise INTEGER NOT NULL, currency TEXT NOT NULL, decision_hash TEXT NOT NULL, posted_at TEXT NOT NULL);
+CREATE TABLE journal_entries (entry_id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items,
+  kind TEXT NOT NULL CHECK(kind IN('BANK_LINE_POSTING','INVOICE_ACCRUAL','INVOICE_PAYMENT','REVERSAL')),
+  vendor_id TEXT, decision_hash TEXT NOT NULL, approval_id TEXT, attempt_key TEXT, currency TEXT NOT NULL,
+  memo TEXT NOT NULL, posted_at TEXT NOT NULL, UNIQUE(item_id, kind));
+CREATE TABLE journal_lines (entry_id TEXT NOT NULL REFERENCES journal_entries, line_no INTEGER NOT NULL,
+  account TEXT NOT NULL, debit_paise INTEGER NOT NULL DEFAULT 0 CHECK(debit_paise >= 0),
+  credit_paise INTEGER NOT NULL DEFAULT 0 CHECK(credit_paise >= 0), PRIMARY KEY(entry_id, line_no));
+-- balance (sum of debits = sum of credits per entry) is enforced in the same txn by core and re-checked by `audit verify`
 CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items, decision_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN('PENDING','APPROVED','REJECTED','SUPERSEDED')), reviewer TEXT, reason TEXT,
   overrides_json TEXT NOT NULL DEFAULT '[]', requested_at TEXT NOT NULL, decided_at TEXT, UNIQUE(item_id, decision_hash));
@@ -303,12 +321,11 @@ Both are re-read and hashed on every `run`/`resume`/`approve`. `policy_hash` cov
 ```yaml
 # ===== owner A: runtime =====
 limits: {max_runtime_seconds: 600, max_cost_inr: 25.0, max_cost_inr_per_item: 5.0, call_timeout_s: 20}  # request limits: the stricter wins
-payments: {provider: stripe, currency: INR, test_payment_method: pm_card_visa, idem_window_h: 23,
+payments: {provider: fake, currency: INR, test_payment_method: pm_card_visa, idem_window_h: 23,   # stripe = optional extension
            refuse_live_keys: true, approve_executes_inline: true}
 approvals: {approvers: [], lock_wait_s: 10}               # [] = any name (declared identity); policy.yaml sets the allowlist
 costs:
   crustdata: {inr_per_credit: null, estimates: {identify: 0.2, web_fetch: 1}}
-  llm: {model: null, inr_per_mtok_in: null, inr_per_mtok_out: null}
   infra_inr_per_item: null
   unknown_reserve_inr: 1.0                                # budget reservation when the price is unknown; reported cost stays UNKNOWN
 output:
@@ -319,12 +336,11 @@ logging: {dir: var/logs, mask_accounts: true}
 storage: {db_path: var/paypilot.db, lock_path: var/paypilot.lock, fake_provider_db: var/fake_provider.db}
 # ===== owner B: identity & evidence =====
 sources:
-  ifsc: {base_url: https://ifsc.razorpay.com, retries: 2, backoff_base_s: 0.5, cache_ttl_h: 720}
+  ifsc: {enabled: true, base_url: https://ifsc.razorpay.com, retries: 2, backoff_base_s: 0.5, cache_ttl_h: 720}   # optional check; disabled → ifsc_valid = NOT_CHECKED
   crustdata: {base_url: https://api.crustdata.com, api_version: "2025-11-01", retries: 3, backoff_base_s: 1.0,
               rate_per_min: {identify: 30, web_fetch: 10}, identify_by: domain, cache_ttl_h: 168, enabled: true}
   webfetch: {paths: ["/", "/contact-us", "/about-us"], skip_domains: [zaubacorp.com, filesure.in],
              cf_markers: ["Just a moment", "cf-chl"], passage_window: 200, cache_ttl_h: 24, enabled: true}
-  llm: {enabled: false, redact: [email, phone]}
 normalize:                                                # [policy]
   processor_prefixes: ['^RAZ\*', '^PAYTM\*', '^NEFT[-/ ]', '^IMPS[-/ ]', '^UPI[-/ ]', '^POS ', '^ACH ', '^BIL/']
   city_tokens: [BLR, BANGALORE, BENGALURU, MUM, MUMBAI, DEL, DELHI, GGN, GURGAON, CHN, CHENNAI, HYD, PUNE, KOL]
@@ -391,7 +407,6 @@ class ExtClient(Protocol):       # B implements in sources/http.py over Ledger/C
     def get_json(self, provider, operation, url, *, params=None, item_id, stage) -> ExtResponse: ...
     def post_json(self, provider, operation, url, body, *, item_id, stage) -> ExtResponse: ...
     def fetch_page(self, url, *, item_id, stage) -> ExtResponse: ...
-    def llm_extract(self, prompt, schema, *, item_id, stage) -> ExtResponse: ...      # P2
 # ExtResponse(ok, status, data, headers, error, cache_hit, retrieved_at, request_hash). It NEVER raises for network or budget problems:
 # error ∈ TIMEOUT | RATE_LIMITED | CREDITS_EXHAUSTED | AUTH | FORBIDDEN | NOT_FOUND | SERVER | BAD_BODY | BUDGET | BLOCKED
 class HistoryView(Protocol):     # A implements over SQLite + payment_history; read-only
@@ -402,7 +417,7 @@ class HistoryView(Protocol):     # A implements over SQLite + payment_history; r
     def po_billed_paise(self, po_number, *, before_item) -> int: ...
     def open_critical_for_vendor(self, vendor_id) -> list[str]: ...                  # containment
 # before_item: order = (date, input_name, row_no). The first occurrence proceeds; later ones are held.
-class PaymentProvider(Protocol): # A: payments/stripe_provider.py, payments/fake.py
+class PaymentProvider(Protocol): # A: payments/fake.py (default, P0); payments/stripe_provider.py (optional extension)
     def create(self, key: str, amount_paise: int, currency: str, metadata: dict) -> ProviderPayment: ...
     def confirm(self, provider_ref: str, key: str) -> ProviderPayment: ...
     def retrieve(self, provider_ref: str) -> ProviderPayment: ...
@@ -422,6 +437,8 @@ approvals.service.approve(item_id, reviewer, reason, overrides) -> Approval     
 payments.executor.execute(payment: Payment, provider, ctx) -> Payment
 payments.reconcile.reconcile_open(provider, ctx) -> list[Payment]                     # first thing on every command
 reports.writer.write_outputs(run_id, ctx) -> list[Path]
+core.journal.post_entry(conn, entry: JournalEntry) -> None                            # same txn as the state change; asserts balance
+audit.verify.verify_run(run_id: str, cfg: RunConfig) -> AuditVerifyReport             # A; re-calls C's decide() on stored facts + snapshot
 # B
 resolve.normalize.descriptor_key(s, policy) -> str; name_key(s, policy) -> str; invoice_canonical(s, policy) -> str
 resolve.matcher.resolve_vendor(item: WorkItem, ctx: StageContext) -> Resolution
@@ -451,6 +468,7 @@ reconciliation.match.three_way(decision: Decision | None, payment: Payment | Non
 | `exceptions` | `[--run RUN_ID] [--open] [--severity S]` | sorted by severity, then age |
 | `exception` / `resolve-exception` | `EXC_ID` / `EXC_ID --by NAME --resolution CODE --note TEXT [--evidence SOURCE_ID…]` | RESOLVED / RECOVERED require evidence |
 | `report` / `ledger` / `export` | `[--run RUN_ID] [--json] [--out PATH]` | `ledger` shows cost_status KNOWN / PARTIAL / UNKNOWN |
+| `audit verify` | `[--run RUN_ID]` | replays the run from the DB: re-derives every decision_hash from stored facts + policy snapshot; checks approval ↔ payment ↔ journal links, one confirmed attempt per payment key, balanced entries and trial balance, unbroken audit chain, every output fact → stored source. Exit 0 = books verified |
 | `demo reset` | — | wipes `var/` and `out/` (demo/test only; asks for confirmation) |
 
 `PAYPILOT_TEST_AUTOAPPROVE=1` is honoured only with `--provider fake`. `PAYPILOT_CRASH_AT=<point>` is used by the crash tests (FAILURE_MODES §3).

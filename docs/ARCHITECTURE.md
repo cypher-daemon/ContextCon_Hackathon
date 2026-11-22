@@ -1,6 +1,8 @@
 # PayPilot: System Architecture
 
-> **PayPilot** is a B2B accounts-payable operations service for mid-size Indian logistics (3PL) companies. It posts bank lines to the right payee and account, pays approved vendor invoices **at most once**, and manages every financial exception (duplicates, lookalike vendors, bank-detail fraud, uncertain or wrong payments) until there is evidence it is resolved.
+> **PayPilot** is an autonomous bookkeeping and accounts-payable agent for mid-size Indian logistics (3PL) companies. It posts bank lines to the right payee and account, pays approved vendor invoices **at most once** (even through crashes), stops bank-detail fraud, reconciles against bank statements, and keeps **books an auditor can replay line by line**. Its core is **exception management**: knowing when *not* to proceed, explaining why, and giving a human the evidence to resolve it.
+>
+> **Priorities:** correct bookkeeping → vendor resolution and evidence → duplicate and fraud detection → exceptions and approvals → crash-safe state → reconciliation → audit report and CLI demo → *then* (if time) a real payment provider's test mode. **The payment provider is an implementation detail behind an interface.**
 >
 > **Status:** final design, planning phase. No code yet. Exact contracts are in [`INTERFACES.md`](INTERFACES.md), failure behaviour in [`FAILURE_MODES.md`](FAILURE_MODES.md), the demo world in [`SCENARIOS.md`](SCENARIOS.md).
 > **Precedence:** `HACKATHON_INFORMATION.md` Part A (binding rules) > `docs/DECISIONS.md` > this file > the other docs. Earlier drafts are kept unchanged in `docs/archive/` for history only.
@@ -16,7 +18,7 @@
 | **Input** | A **request** (post these bank lines / pay these invoices / reconcile this statement) plus a batch file, checked against the client's **own records**: vendor master (source of truth for legal name, GSTIN, CIN, bank account, IFSC), POs, payment history, chart of accounts. |
 | **Finished result** | Every item ends in exactly one outcome: `POSTED`, `PAID` (test provider, after human approval), `HELD` (with reasons), `CANNOT_VERIFY` (what is missing is named), `REJECTED`, or `PAYMENT_UNCERTAIN` (stop and reconcile). Every blocking issue is a durable **exception**; wrong payments open a **recovery case**. Every fact cites its source, and every external call is in the cost ledger. |
 | **Product promise** | Never guess who to pay. Never pay the same invoice twice, even through crashes. Never take an irreversible action without a human. Keep every problem visible until it is resolved with evidence. |
-| **Pass mark** | All scenarios in `SCENARIOS.md` produce their expected outcomes; the kill -9 loop yields ≤ 1 successful provider payment per invoice; every output fact has a source. |
+| **Pass mark** | All scenarios in `SCENARIOS.md` produce their expected outcomes, asserted against the **database, output files and audit log**; the kill -9 loop yields ≤ 1 successful provider payment per invoice; `audit verify` replays every decision and balances the books; every output fact has a source. |
 
 **What PayPilot deliberately is not:** an LLM that decides payments; a bank; a proof of account ownership; a dashboard product (the operator surface is a CLI plus generated reports); a distributed system (yet, see §12).
 
@@ -32,17 +34,15 @@ flowchart LR
     CORE[PayPilot service<br/>CLI + pipeline + SQLite]
   end
   REC[(Client records<br/>vendor master, POs, payment history,<br/>chart of accounts, bank statement)]
-  STRIPE[[Payment provider<br/>Stripe TEST mode]]
-  IFSC[[Razorpay IFSC API<br/>bank / branch metadata, free]]
-  CRU[[Crustdata<br/>company identify by domain, web fetch]]
-  LLM[[Claude LLM<br/>extraction of unstructured text only]]
+  STRIPE[[Payment provider adapter<br/>FakeProvider by default ·<br/>Stripe test mode as optional extension]]
+  IFSC[[Razorpay IFSC API<br/>optional: bank / branch metadata]]
+  CRU[[Crustdata - the live-data source<br/>company identify by domain, web fetch]]
   OPS -- "run / resume / report" --> CORE
   FIN -- "approve / reject / resolve exception" --> CORE
   REC -- "files, re-read every run" --> CORE
-  CORE -- "create / confirm / retrieve PaymentIntent<br/>(idempotency keys)" --> STRIPE
+  CORE -- "create / confirm / retrieve<br/>(idempotency keys)" --> STRIPE
   CORE -- "GET /{IFSC}" --> IFSC
   CORE -- "identify(domain), fetch(url)" --> CRU
-  CORE -. "optional, P2" .-> LLM
   CORE -- "results, report, exceptions, ledger, audit" --> OPS
 ```
 
@@ -50,7 +50,8 @@ flowchart LR
 1. The **client's records** are trusted as the source of truth for vendor identity and bank details, but are still validated (duplicates and conflicts inside the vendor master are exceptions).
 2. **Live sources** are evidence of specific facts only: IFSC → bank and branch; Crustdata → the company behind a domain; a company website → a self-published claim.
 3. **Batch input** (bank lines, invoices, vendor emails) is untrusted. A changed bank account in an invoice is treated as possible fraud.
-4. The **payment provider** is the only system that can move money. We never assume what it did; we ask it.
+4. The **payment provider** is the only system that can move money. We never assume what it did; we ask it. PayPilot works against the `PaymentProvider` interface: a **FakeProvider** with its own durable store (it simulates success, decline, timeout, and "accepted just before we crashed") is the default, and a real test-mode provider (Stripe) plugs in behind the same interface if time allows.
+5. **No LLM.** All inputs are structured CSV/JSON; every decision is deterministic code.
 
 ---
 
@@ -144,7 +145,7 @@ flowchart TD
 | Check | Every check returns PASS / FAIL / SKIPPED / ERROR / UNKNOWN with evidence | Treat a source error or missing optional file as PASS |
 | Decide | Pure function of normalized facts + policy; collects **all** reasons | Use an LLM; stop at the first flag |
 | Approve | Shows payee, amount, account last 4, three bank statuses, reasons, sources; binds to `decision_hash` | Approve a stale decision; override a never-overridable flag |
-| Execute | Persist intent → call provider with an idempotency key → persist the result | Retry blindly; infer success or failure from silence |
+| Execute | Persist intent → call provider with an idempotency key → persist the result → write the balanced journal entry | Retry blindly; infer success or failure from silence |
 | Reconcile | Compares what we intended, what the provider did, what the bank shows | Call "provider-confirmed" "settled" |
 
 ---
@@ -169,7 +170,7 @@ sequenceDiagram
   actor Approver
   participant CLI as PayPilot CLI
   participant DB as SQLite (WAL)
-  participant ST as Stripe (test)
+  participant ST as Payment provider (FakeProvider / Stripe test)
   Approver->>CLI: approve ITEM --by "Controller"
   CLI->>DB: txn: approval APPROVED (decision_hash) + payment CREATED + audit
   CLI->>DB: step=create_sent
@@ -178,7 +179,7 @@ sequenceDiagram
   Approver->>CLI: resume
   CLI->>DB: open payments? → step=create_sent, no ref
   CLI->>ST: create again with SAME key
-  ST-->>CLI: same PaymentIntent pi_123 (replayed, no new charge)
+  ST-->>CLI: same payment pi_123 (replayed, no new charge)
   CLI->>DB: provider_ref=pi_123, step=ref_saved
   CLI->>DB: step=confirm_sent
   CLI->>ST: confirm pi_123 (Idempotency-Key: K:a1:confirm)
@@ -277,7 +278,8 @@ stateDiagram-v2
 erDiagram
   RUNS ||--o{ SESSIONS : "restarts"
   RUNS ||--o{ ITEMS : contains
-  ITEMS ||--o| POSTINGS : "at most one"
+  ITEMS ||--o{ JOURNAL_ENTRIES : "one per kind"
+  JOURNAL_ENTRIES ||--|{ JOURNAL_LINES : "balanced Dr = Cr"
   ITEMS ||--o{ APPROVALS : "one per decision_hash"
   ITEMS ||--o| PAYMENTS : "one logical payment"
   PAYMENTS ||--o{ PAYMENT_ATTEMPTS : "attempt n+1 only after confirmed failure"
@@ -292,10 +294,27 @@ erDiagram
 
 The full DDL, with every UNIQUE constraint that enforces "at most once", is in [`INTERFACES.md`](INTERFACES.md) §6.
 
+### 7.1 Books an auditor can replay
+- **Double-entry journal.** Every financial effect is one balanced journal entry (Σ debit = Σ credit):
+  - Bank-line posting: Dr *expense account* / Cr *Bank*.
+  - Approved invoice paid: Dr *Accounts payable – vendor* / Cr *Bank – payments clearing*.
+  - Invoice accepted for payment: Dr *expense account* / Cr *Accounts payable – vendor*.
+  - Each entry links to the item, its `decision_hash`, its approval (if any) and its payment attempt.
+- **Policy snapshot per run.** The exact merged config and policy, plus the client-data hash, are stored on the run row.
+- **`audit verify`** replays the run line by line from the database alone:
+  1. Re-runs `decide()` on the stored facts and policy snapshot → the same `decision_hash` for every item.
+  2. Every PAID item has exactly one APPROVED approval with the matching hash, one confirmed provider attempt, and one journal entry.
+  3. No payment key has more than one confirmed attempt.
+  4. Every journal entry balances, and the trial balance sums to zero.
+  5. Every state change has an unbroken audit-event chain.
+  6. Every fact in the output resolves to a stored source.
+
+  Any failure is reported as an exception. This is the deliverable an auditor (and a judge) can run.
+
 | Guarantee | Enforced by |
 |---|---|
 | One item row per input row | `items.item_id` deterministic + `UNIQUE(run_id, input_name, row_no)` |
-| One posting per item | `postings.item_id UNIQUE` |
+| One journal entry per item and kind | `journal_entries UNIQUE(item_id, kind)` |
 | One approval per decision | `approvals UNIQUE(item_id, decision_hash)` |
 | One logical payment per invoice | `payments.payment_key UNIQUE`, `payments.item_id UNIQUE` |
 | One provider attempt key per attempt | `payment_attempts.attempt_key UNIQUE` |
@@ -319,7 +338,7 @@ Every factual claim in the output is a `Source`:
 | Razorpay IFSC | The IFSC exists and maps to a bank and branch (retrieval time from the HTTP `Date` header) | Who owns an account at that branch |
 | Crustdata Identify (by domain) | A company is associated with that domain | The legal entity that issued the invoice (it often returns the parent brand) |
 | Company website passage | The website **claims** a legal name / CIN (self-published) | Registry status |
-| Stripe test mode | The provider accepted, declined or confirmed a test charge | A real vendor bank payout or bank settlement |
+| Payment provider (FakeProvider; Stripe test if enabled) | The provider accepted, declined or confirmed the payment action | A real vendor bank payout (a Stripe PaymentIntent is a card-charge simulation) or bank settlement |
 
 Bank verification is always shown as **three separate statuses**: `ifsc_valid`, `account_matches_master`, `ownership_verified` (always `NOT_VERIFIED`, because no source we use proves ownership).
 
@@ -341,7 +360,7 @@ The full matrix is in [`FAILURE_MODES.md`](FAILURE_MODES.md).
 
 ## 10. Cost, limits and observability
 - **Cost ledger:**
-  - A row is **reserved before** every external call (Crustdata, IFSC, Stripe, LLM), then confirmed, failed or marked a cache hit.
+  - A row is **reserved before** every external call (Crustdata, IFSC, payment provider), then confirmed, failed or marked a cache hit.
   - After a crash, reserved rows become `UNCONFIRMED` and still count, so spend is never under-reported.
   - Credits and tokens are converted to ₹ via config. An unknown price is reported as `UNKNOWN`, never ₹0.
 - **Limits:** a per-run time limit and cost limit; the stricter of the request's and the client policy's applies.
@@ -364,13 +383,13 @@ The full matrix is in [`FAILURE_MODES.md`](FAILURE_MODES.md).
 | 3 | Store | SQLite WAL, `synchronous=FULL`, single-instance lock | Postgres; JSON files | Atomic multi-row transactions, zero setup. Trade-off: one writer (fine now; Postgres at scale) |
 | 4 | Lifecycles | Item, payment, exception and recovery as separate machines | One merged enum | A payment can succeed while its exception stays open |
 | 5 | Payment identity | Logical key + provider attempt key | Approval- or version-suffixed keys; DB-only uniqueness | No override, retry or restart can create a second success, yet a confirmed failure can still be retried safely |
-| 6 | Provider | Stripe test mode (labelled "test card-charge simulation"); FakeProvider for the crash suite | Razorpay Payments (needs browser Checkout); RazorpayX Payouts (true payouts but KYC) | Native idempotency keys and retrieve/search. RazorpayX is the production adapter behind the same interface |
+| 6 | Provider | `PaymentProvider` interface; **FakeProvider** (durable, fault-injecting) is the foundation; Stripe test mode is an optional extension, labelled "test card-charge simulation" | Build around Stripe; Razorpay Payments (needs browser Checkout); RazorpayX Payouts (true payouts but KYC) | Correctness doesn't depend on any gateway or credentials. A real test-mode provider is a plug-in, not the foundation |
 | 7 | Identity | Client master first; Crustdata by **domain** only; tie / lookalike / parent brand → CANNOT_VERIFY | Name-based lookup; embeddings or an LLM judge | Probes showed 3 different "Sharma Traders" at confidence 1.0. A wrong payee is worse than "cannot verify" |
 | 8 | Decisions | Flags → declarative rules in config → all reasons | Rules DSL / eval; LLM | Reproducible `decision_hash`; explainable; same facts → same answer |
 | 9 | Decision hash | Normalized facts + decision-policy config only | Hash everything, including evidence timestamps | Re-fetching a source or editing output config doesn't silently invalidate approvals |
 | 10 | Exceptions | Durable register + recovery cases | Logs | Problems stay visible and owned until resolved with evidence |
 | 11 | Config | `config.yaml` (product defaults) + `clients/<id>/policy.yaml` (client rules), strict schema, hashed, re-read every run | Constants in code | A requirement change is a 1–2 line edit; a second client is a new folder |
-| 12 | LLM | Only for extracting unstructured text (P2), validated by schema, with a deterministic fallback | LLM extraction or decisions everywhere | Cost, latency, reproducibility |
+| 12 | LLM | **None.** Structured CSV/JSON, deterministic parsing | LLM extraction or decisions | Financial decisions must be deterministic, cheap and reproducible |
 
 ---
 
@@ -410,7 +429,7 @@ flowchart LR
   - Only the needed vendor-master columns are loaded.
   - Bank account numbers become HMAC fingerprints (key in `.env`) + last 4 at load time; the full number is never stored or logged.
   - No data about individual people is stored.
-  - Emails and phone numbers are redacted before any LLM call.
+  - No LLM is called, so no client text leaves the system except domain lookups to Crustdata.
 - **Human control:** every payment needs a named approver. Approvers come from the client policy's allowlist (`approvers:`); this is identity by declaration in the hackathon build, with SSO in production. Overrides need a written reason, and some flags can never be overridden.
 - **Honest claims:**
   - The output never says "verified" when a source only *claims* something.
@@ -427,11 +446,11 @@ The buyer, pricing and the ethics narrative are in [`BUSINESS.md`](BUSINESS.md).
 ```text
 paypilot/                     Python package
   __main__.py  schemas.py  context.py  flags.py  policy_config.py
-  core/        config db state ids audit log lock crash budget history pipeline       (A)
+  core/        config db state ids audit log lock crash budget history journal pipeline (A)
   io/          request batch client_data fingerprint                                   (A)
-  cli/  approvals/  payments/  ledger/  reports/                                       (A)
+  cli/  approvals/  payments/  ledger/  reports/  audit/ (verify)                       (A)
   resolve/     normalize matcher                                                       (B)
-  sources/     http ifsc crustdata webfetch llm                                        (B)
+  sources/     http crustdata webfetch ifsc                                            (B)
   checks/      required period duplicate po account bank runner                        (C)
   decide/      rules engine                                                            (C)
   exceptions/  classify lifecycle recovery                                             (C)

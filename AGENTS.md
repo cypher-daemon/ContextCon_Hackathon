@@ -20,7 +20,7 @@ Your human tells you which lane this session is: **B** (identity & evidence) or 
 
 **Never edit:**
 - `schemas.py`, `context.py`, `db/`, `pyproject.toml`
-- `paypilot/{core,io,cli,approvals,payments,ledger,reports}/`
+- `paypilot/{core,io,cli,approvals,payments,ledger,reports,audit}/`
 - `tests/{contract,integration,crash}/`, `tests/fakes.py`
 - lane A's config sections, `README.md`
 - `docs/` (except appending to `docs/CONTRACT_CHANGES.md`)

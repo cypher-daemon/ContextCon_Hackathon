@@ -1,7 +1,13 @@
 # PayPilot: Demo World & Scenarios
 
 > We own the test world. These scenarios are the acceptance suite, the screening demo, and the video script's data.
-> Each scenario lives in `scenarios/<id>/` with `request.json`, batch files and `expected.jsonl` (format in INTERFACES §2–3). `tests/integration/test_scenarios.py` runs every scenario and diffs against `expected.jsonl`, ignoring timestamps.
+> Each scenario lives in `scenarios/<id>/` with `request.json`, batch files and `expected.jsonl` (format in INTERFACES §2–3), plus `expected_db.json`.
+> `tests/integration/test_scenarios.py` runs every scenario and asserts on **three things, not just return values**:
+> 1. **Output files:** `results.jsonl` == `expected.jsonl`, ignoring timestamps; `journal.csv` / `payment_instructions.csv` row counts.
+> 2. **Database:** `expected_db.json` gives row counts and key fields per table (items by state, journal entries and lines balanced, approvals, payments + attempts, exceptions by type and severity, recovery cases, ledger rows by provider).
+> 3. **Audit log:** the expected sequence of `audit_events` transitions per item, and `audit verify` exits 0.
+>
+> No scenario needs Stripe, real payment data or an LLM. Payments go through the durable **FakeProvider** unless `payments.provider: stripe` is set.
 > All dates are after **1 Sep 2026**. Today's demo date is 22 Nov 2026.
 
 ## 1. Data honesty rules (ethics)
@@ -59,11 +65,12 @@
 ### SC-03 Carrier invoice run, `PAY_INVOICES`
 | Invoice | Input | Expected |
 |---|---|---|
-| INV-201 | Delhivery Limited, `DLV/2026-27/00418`, ₹48,000, PO-NB-1042, qty 12, remit = master account | **AWAITING_APPROVAL** → `approve --by "Finance Controller"` → **PAID** (Stripe test) · bank_status: ifsc_valid=PASS (live), account_matches_master=PASS, ownership_verified=NOT_VERIFIED |
+| INV-201 | Delhivery Limited, `DLV/2026-27/00418`, ₹48,000, PO-NB-1042, qty 12, remit = master account | **AWAITING_APPROVAL** → `approve --by "Finance Controller"` → **PAID** (payment provider: FakeProvider, or Stripe test if enabled) · journal: accrual (Dr Freight - carriers / Cr AP-Delhivery) + payment (Dr AP-Delhivery / Cr Bank clearing) · bank_status: ifsc_valid=PASS (live; NOT_CHECKED if IFSC disabled), account_matches_master=PASS, ownership_verified=NOT_VERIFIED |
 | INV-202 | Blue Dart, `BDE-26-27-07781` (reformatted `BDE/26-27/7781`), ₹22,500 | **HELD**: ALREADY_PAID (payment history `hist-0091`), not overridable |
 | INV-203 | VRL Logistics, `VRL/11/2026/0332`, ₹64,800 vs PO-NB-1043 ₹60,000 | **HELD**: PO_AMOUNT_MISMATCH (+8.0%, over 1.0% tolerance), overridable |
 | INV-204 | "Delhivery Logistics Pvt", `DLP-5521`, ₹31,000, no GSTIN/domain | **CANNOT_VERIFY**: LOOKALIKE (candidate Delhivery Limited; differs by "LOGISTICS") |
 | INV-205 | Indian Oil, no invoice number, ₹1,20,000 | **CANNOT_VERIFY**: MISSING_FIELD invoice_no_raw |
+| INV-206 | VRL Logistics, `VRL/11/2026/0340`, ₹18,000, **no PO number** | **HELD**: PO_MISSING (PO required for PAY_INVOICES), overridable with a reason |
 
 ### SC-04 Bank-change fraud attempt, `PAY_INVOICES` + vendor message
 | Item | Input | Expected |
@@ -77,12 +84,12 @@
 |---|---|
 | `approve INV-201` with `PAYPILOT_CRASH_AT=after_create_response_before_ref` (or the judge's random kill) | process dies |
 | `resume` | "reconciled attempt pp_…:a1: PaymentIntent pi_… found via same idempotency key; 0 new payments"; item PAID |
-| Stripe test dashboard | **exactly one** PaymentIntent for that invoice |
+| Provider record (FakeProvider DB; the Stripe test dashboard if enabled) | **exactly one** successful payment for that invoice; `payment_instructions.csv` has one row; journal has one payment entry; `audit verify` passes |
 
 ### SC-06 Provider timeout → uncertain → reconciled (FakeProvider fault injection)
 | Step | Expected |
 |---|---|
-| Fake provider times out on confirm | item PAYMENT_UNCERTAIN; exception PROVIDER_OUTCOME_UNKNOWN (HIGH) |
+| FakeProvider **accepts** the confirm, then the response times out (accepted just before we lose contact) | item PAYMENT_UNCERTAIN; exception PROVIDER_OUTCOME_UNKNOWN (HIGH); **no journal payment entry yet** |
 | `resume` with the provider back | retrieve → SUCCEEDED → PAID; exception RESOLVED with the provider ref as evidence |
 | Variant: idempotency window expired + search empty | stays PAYMENT_UNCERTAIN; **no new create** |
 
@@ -95,7 +102,7 @@
 | A debit with no matching instruction | UNMATCHED (MEDIUM exception) |
 | Then `resolve-exception … --resolution RECOVERED` **without** evidence | refused |
 
-### SC-08 Unknown vendors with live lookups (P1), `PAY_INVOICES`
+### SC-08 Unknown vendors with live lookups (P0: the live-data decision), `PAY_INVOICES`
 | Invoice | Input | Expected |
 |---|---|---|
 | INV-401 | "Gati Express & Supply Chain", domain gati.com, not in master | Crustdata identify(gati.com) + web fetch → if the passage has a legal name + CIN: **HELD** VENDOR_ONBOARDING_REQUIRED + WEBSITE_IDENTITY_CLAIM_ONLY (cited passage labelled self-published); otherwise HELD VENDOR_ONBOARDING_REQUIRED. Never PAID |
@@ -107,16 +114,48 @@ Run SC-08 with `limits.max_cost_inr: 0.5`. Expected: the first paid call is rese
 ### SC-10 Unsupported request
 `request.json` without an operation; instruction "Is Sharma Traders a registered company?". Expected: one run-level **CANNOT_VERIFY** result, UNSUPPORTED_REQUEST, missing ["supported operation"], exit code 0.
 
-## 4. Acceptance map
+### SC-11 Same invoice re-sent in a different file, `PAY_INVOICES`
+After SC-03 (INV-201 PAID), a new request `invoices_resent_2026-11-12.json` contains the same Delhivery invoice as `DLV-2026-27-418` (different filename, different formatting).
+
+| Expected | Asserted on |
+|---|---|
+| **HELD**: DUPLICATE_INVOICE, citing the PAID item from SC-03 (canonical `DLV\|2026\|27\|418` matches across runs via the DB) | `results.jsonl`; **no new payments/attempts row**; exceptions table +1 DUPLICATE_INVOICE (HIGH); audit shows NEW→…→HELD only |
+
+### SC-12 Auditor replay
+After SC-01…SC-11, run `audit verify` over every run.
+
+| Expected | Asserted on |
+|---|---|
+| Exit 0. Every decision_hash re-derives from the stored facts + policy snapshot; every PAID item ↔ one approval ↔ one confirmed attempt ↔ one payment journal entry; trial balance Σ = 0; every output fact → a stored source | the `audit verify` report |
+| Tamper test: edit one journal line's amount in a copy of the DB → `audit verify` exits non-zero and names the entry | `tests/integration/test_audit_verify.py` |
+
+## 4. Coverage of the team's required test cases
+| Required case | Scenario |
+|---|---|
+| Normal invoice | SC-03 INV-201 |
+| Duplicate invoice with a different filename | SC-11 |
+| Same invoice with slightly different formatting | SC-03 INV-202 (vs payment history), SC-11 |
+| Vendor requesting a different bank account | SC-04 MSG-301, INV-302 |
+| Lookalike vendor names | SC-03 INV-204; tie SC-02 BL-104 |
+| Unknown vendor with insufficient evidence | SC-01 BL-004; SC-08 INV-401 / INV-402 |
+| Missing PO | SC-03 INV-206 |
+| Invoice amount mismatch | SC-03 INV-203 |
+| Duplicate bank transaction | SC-01 BL-003; SC-07 duplicate debit |
+| Crash during payment execution | SC-05 + the kill loop (30 random kills) |
+| Timeout after the provider accepted | SC-06 |
+| The four official bank lines | SC-01 |
+
+## 5. Acceptance map (Part A rules)
 | Requirement (Part A) | Proven by |
 |---|---|
 | Duplicate record | SC-01 BL-003, SC-03 INV-202, SC-07 duplicate debit |
 | Lookalike name | SC-03 INV-204, SC-02 BL-104 (tie) |
 | Unsettleable → cannot verify | SC-01 BL-004, SC-10, SC-08 INV-402 |
 | Every fact sourced | every `expected.jsonl` row asserts its `sources[]` |
-| Live data in a decision | SC-03 INV-201 / SC-04 IFSC (P0); SC-08 Crustdata (P1) |
+| Live data in a decision | SC-08: Crustdata identify by domain + web fetch (P0). IFSC lookup in SC-03 / SC-04 is an optional extra check |
 | Approval before an irreversible action | SC-03 INV-201; SC-04 shows no payment row without approval |
-| Test-mode payment | SC-03 / SC-05 (Stripe test) |
+| Payment provider test mode | FakeProvider (P0, durable, fault-injecting) in every scenario; Stripe test mode via the same interface if time permits (P2), labelled a card-charge simulation |
 | Time and cost limits, per-call cost | SC-09; `ledger` after every scenario |
 | Kill and restart, each action once | SC-05 + `tests/crash/test_kill_loop.py` (30 random kills) |
-| Exception management | SC-04, SC-06, SC-07 |
+| Exception management | SC-04, SC-06, SC-07, SC-11 |
+| Books an auditor can replay | SC-12 (`audit verify`) |

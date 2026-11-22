@@ -12,17 +12,17 @@
 
 ## You own
 - **Shared contract:** `paypilot/schemas.py`, `paypilot/context.py`, `db/schema.sql`, `pyproject.toml`, `.gitignore`, `.env.example`. You apply every `docs/CONTRACT_CHANGES.md` request as one `contract:` commit.
-- `paypilot/{__main__.py,core,io,cli,approvals,payments,ledger,reports}/`, `scripts/`, `tests/{contract,integration,crash}/`, `tests/fakes.py`, `README.md`.
+- `paypilot/{__main__.py,core,io,cli,approvals,payments,ledger,reports,audit}/`, `scripts/`, `tests/{contract,integration,crash}/`, `tests/fakes.py`, `README.md`.
 - `config.yaml` sections: `limits payments approvals costs output logging storage`.
 
 **Never edit** lane B/C paths (listed in AGENTS.md) or `docs/` without the human asking.
 
 ## Hard rules
-1. **Persist before side effects:** ledger row before any call; payment + attempt rows before Stripe; `provider_ref` before confirm; state change + audit event in **one** transaction; CAS on `(state, version)`. If a write fails → exit 70 before any provider call.
+1. **Persist before side effects:** ledger row before any call; payment + attempt rows before any provider call; balanced journal entry in the same txn as POSTED/PAID; `provider_ref` before confirm; state change + audit event in **one** transaction; CAS on `(state, version)`. If a write fails → exit 70 before any provider call.
 2. **Reconcile first** on every `run` / `resume` / `approve`. Unknown outcome → `PAYMENT_UNCERTAIN`. **Never create a payment because a search came back empty.**
 3. **`payment_key` is immutable.** A new `attempt_key` only after a provider-confirmed decline/return **and** a fresh approval. Never add approval ids or versions to a key.
 4. **Approvals** bind to `decision_hash`; the approver must be in the policy allowlist; NEVER_OVERRIDABLE is refused; vendor containment is checked inside the enqueue transaction.
-5. **Stripe:** test keys only; refuse `sk_live_`. Secrets only from `.env`.
+5. **Provider:** FakeProvider is the default and the test target; Stripe is an optional P2 extension (test keys only, refuse `sk_live_`). Secrets only from `.env`. No LLM.
 6. **Accounts:** HMAC fingerprint + last 4 at load. Never log or store the raw number.
 7. **Cost:** a `null` price is reported as UNKNOWN, never ₹0.
 
