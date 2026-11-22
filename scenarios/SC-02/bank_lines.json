@@ -1,0 +1,6 @@
+[
+  {"line_id": "BL-101", "date": "2026-10-14", "description": "UPI/SWIGGY/BENGALURU", "amount_inr": "1240.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-102", "date": "2026-11-02", "description": "RAZ*SWIGGY BLR", "amount_inr": "980.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-103", "date": "2026-10-15", "description": "NEFT/DELHIVERY", "amount_inr": "2000.00", "direction": "CREDIT", "currency": "INR", "bank_reference": null},
+  {"line_id": "BL-104", "date": "2026-10-18", "description": "IMPS/OM SAI ROADWAYS", "amount_inr": "6500.00", "direction": "DEBIT", "currency": "INR", "bank_reference": null}
+]

@@ -1,0 +1,2 @@
+ref,vendor_id,invoice_number,amount_inr,currency,paid_on,provider_ref,bank_reference,status
+HIST-0091,V-0004,BDE/26-27/7781,22500.00,INR,2026-10-28,hist-0091,,PAID

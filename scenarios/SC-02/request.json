@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "request_id": "northbay-oct-edge-cases-001",
+  "client_id": "northbay",
+  "operation": "POST_BANK_LINES",
+  "instruction": "Post these October 2026 bank lines to the correct accounts.",
+  "period": {"from": "2026-10-01", "to": "2026-10-31"},
+  "inputs": {"bank_lines": "bank_lines.json"},
+  "limits": {"max_runtime_seconds": 600, "max_cost_inr": 25.0}
+}

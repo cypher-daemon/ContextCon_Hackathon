@@ -1,0 +1,9 @@
+vendor_id,legal_name,aliases,cin,gstin,domain,bank_account,ifsc,default_account,category,last_updated
+V-0001,Swiggy Limited,SWIGGY,,,swiggy.com,000000000001,‹IFSC-A›,Staff meals,food,2026-09-30
+V-0002,Amazon Web Services EMEA SARL,AWS EMEA,,,aws.amazon.com,000000000002,‹IFSC-A›,Cloud hosting,cloud,2026-09-30
+V-0003,Delhivery Limited,DELHIVERY,L63090DL2011PLC221234,,delhivery.com,000000000003,‹IFSC-B›,Freight - carriers,freight,2026-09-30
+V-0004,Blue Dart Express Limited,BLUE DART|BLUEDART,,,bluedart.com,000000000004,‹IFSC-B›,Freight - carriers,freight,2026-09-30
+V-0005,VRL Logistics Limited,VRL,,,vrlgroup.in,000000000005,‹IFSC-C›,Freight - carriers,freight,2026-09-30
+V-0006,Indian Oil Corporation Limited,INDIAN OIL|IOCL,,,iocl.com,000000000006,‹IFSC-C›,Fuel,fuel,2026-09-30
+V-0101,Om Sai Roadways Private Limited,OM SAI ROADWAYS,,,,000000000101,‹IFSC-A›,Freight - carriers,freight,2026-09-30
+V-0102,Om Sai Roadways LLP,OM SAI ROADWAYS,,,,000000000102,‹IFSC-A›,Freight - carriers,freight,2026-09-30

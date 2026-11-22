@@ -1,0 +1,4 @@
+{"item_ref":"BL-001","state":"POSTED","outcome":"POSTED","payee":{"vendor_id":"V-0001","legal_name":"Swiggy Limited"},"account":"Staff meals","amount_paise":124000,"currency":"INR","flags":[]}
+{"item_ref":"BL-002","state":"POSTED","outcome":"POSTED","payee":{"vendor_id":"V-0002","legal_name":"Amazon Web Services EMEA SARL"},"account":"Cloud hosting","amount_paise":1850000,"currency":"INR","flags":[]}
+{"item_ref":"BL-003","state":"HELD","outcome":"HELD","payee":{"vendor_id":"V-0002","legal_name":"Amazon Web Services EMEA SARL"},"amount_paise":1850000,"currency":"INR","flags":["DUPLICATE_TRANSACTION"],"duplicate_of":"BL-002"}
+{"item_ref":"BL-004","state":"CANNOT_VERIFY","outcome":"CANNOT_VERIFY","amount_paise":400000,"currency":"INR","flags":["PAYEE_UNRESOLVED"],"missing":["vendor-master record or a GSTIN/domain"],"external_calls":0}

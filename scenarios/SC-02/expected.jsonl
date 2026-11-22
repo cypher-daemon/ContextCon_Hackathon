@@ -1,0 +1,4 @@
+{"item_ref":"BL-101","state":"POSTED","outcome":"POSTED","payee":{"vendor_id":"V-0001","legal_name":"Swiggy Limited"},"account":"Staff meals","amount_paise":124000,"currency":"INR","flags":[]}
+{"item_ref":"BL-102","state":"HELD","outcome":"HELD","payee":{"vendor_id":"V-0001","legal_name":"Swiggy Limited"},"amount_paise":98000,"currency":"INR","flags":["OUT_OF_PERIOD"]}
+{"item_ref":"BL-103","state":"HELD","outcome":"HELD","payee":{"vendor_id":"V-0003","legal_name":"Delhivery Limited"},"amount_paise":200000,"currency":"INR","flags":["CREDIT_LINE"]}
+{"item_ref":"BL-104","state":"CANNOT_VERIFY","outcome":"CANNOT_VERIFY","amount_paise":650000,"currency":"INR","flags":["PAYEE_TIE"],"candidate_vendor_ids":["V-0101","V-0102"]}

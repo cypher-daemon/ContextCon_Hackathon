@@ -1,0 +1,15 @@
+# Client-specific policy overrides only; runtime settings remain in config.yaml.
+approvals:
+  approvers:
+    - Finance Controller
+    - AP Manager
+accounts:
+  by_category:
+    food: Staff meals
+    cloud: Cloud hosting
+    freight: Freight - carriers
+    fuel: Fuel
+po:
+  tolerance_pct: 1.0
+duplicate:
+  window_days: 3
