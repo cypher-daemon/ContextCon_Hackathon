@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from difflib import SequenceMatcher
 from typing import Any
 
 from rapidfuzz import fuzz
@@ -121,7 +120,8 @@ def resolve_vendor(item: BankLine | Invoice | VendorMessage, ctx: Any) -> Resolu
     scores: list[tuple[Vendor, float]] = []
     if query_name:
         for v in vendors:
-            score = max((float(fuzz.ratio(query_name, key)) for key in vendor_keys(v)), default=0.0)
+            score = max((float(max(fuzz.ratio(query_name, key), fuzz.partial_ratio(query_name, key)))
+                         for key in vendor_keys(v)), default=0.0)
             scores.append((v, score))
     scores.sort(key=lambda pair: (-pair[1], pair[0].vendor_id))
     if scores:
@@ -136,7 +136,8 @@ def resolve_vendor(item: BankLine | Invoice | VendorMessage, ctx: Any) -> Resolu
                            flags=["PAYEE_TIE"], reasons=["Multiple vendor names are equally plausible"])
         if best >= floor:
             v = scores[0][0]
-            looks = best < threshold or (second >= floor and best - second < margin)
+            full_name_score = max((float(fuzz.ratio(query_name, key)) for key in vendor_keys(v)), default=0.0)
+            looks = full_name_score < threshold or (second >= floor and best - second < margin)
             return _result("LOOKALIKE" if looks else "FUZZY_CANDIDATE", "fuzzy", vendor=v, score=best,
                            candidates=[(candidate.vendor_id, score) for candidate, score in scores if score >= floor],
                            flags=["LOOKALIKE" if looks else "FUZZY_MATCH"],
