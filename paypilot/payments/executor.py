@@ -251,19 +251,20 @@ def _advance(c: _Ctx, payment_id: str) -> None:
             pay, att, item = _rows(c.con, payment_id)
             step = "REF_SAVED"
         if step in ("REF_SAVED", "CONFIRM_SENT"):
-            # The provider reference is already known, so a failed lookup is NOT an unknown outcome: the state stays as it is and the next
-            # run / resume simply asks again. (Only a failed CREATE, whose result we cannot know, becomes PAYMENT_UNCERTAIN.)
+            # The provider reference is already known, so a failed READ-ONLY lookup is NOT an unknown outcome: the state stays as it is
+            # and the next run / resume simply asks again. A timeout in `confirm` (a money-moving call) is different: it falls through
+            # to the handler below and becomes PAYMENT_UNCERTAIN. Only a failed create or confirm is ever uncertain.
             try:
                 pp = c.provider.retrieve(att["provider_ref"])
-                if pp.status is ProviderStatus.REQUIRES_CONFIRMATION:
-                    if step == "REF_SAVED":
-                        with tx(c.con):                        # persisted BEFORE the confirm call
-                            _set_attempt(c, att, step="CONFIRM_SENT")
-                    crash_point("after_confirm_sent")
-                    pp = c.provider.confirm(att["provider_ref"], ids.step_key(att["attempt_key"], "confirm"))
-                    crash_point("after_confirm_response_before_commit")
             except ProviderTimeout:
                 return
+            if pp.status is ProviderStatus.REQUIRES_CONFIRMATION:
+                if step == "REF_SAVED":
+                    with tx(c.con):                            # persisted BEFORE the confirm call
+                        _set_attempt(c, att, step="CONFIRM_SENT")
+                crash_point("after_confirm_sent")
+                pp = c.provider.confirm(att["provider_ref"], ids.step_key(att["attempt_key"], "confirm"))
+                crash_point("after_confirm_response_before_commit")
             return _settle(c, pay, att, item, pp)
     except (ProviderTimeout, ProviderRejected, BankChanged) as e:
         pay, att, item = _rows(c.con, payment_id)
