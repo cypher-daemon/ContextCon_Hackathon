@@ -12,7 +12,8 @@ const PAGES = [["overview", "/", "Overview"], ["payments", "/payments", "Payment
 const here = (PAGES.find(p => p[1] === location.pathname) || PAGES[0]);
 const SEV = {CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3};
 const CLOSED = ["RESOLVED", "FALSE_POSITIVE", "ACCEPTED_RISK", "CLOSED_NO_ACTION"];
-const ui = {open: new Set(), filter: {}, prev: null, lastBody: "", run: ""};
+const ui = {open: new Set(), filter: {}, prev: null, lastBody: "", run: "", exByItem: {}};
+if (location.hash === "#bank") ui.filter.tab = "bank";
 try { ui.run = sessionStorage.getItem("pp-run") || ""; } catch (e) {}
 
 /* theme */
@@ -24,21 +25,37 @@ $("#theme").onclick = () => {
   try { localStorage.setItem("pp-theme", next); } catch (e) {}
 };
 
-/* what state is an invoice in, in words a person uses */
+/* what state is an item in, in words a person uses. Works for invoices, bank lines and statement lines. */
 function verdict(it) {
+  const V = (key, label, board) => ({key, label, board: board || label});
+  if (it.kind === "BankLine") {
+    if (it.state === "POSTED") return V("posted", "Posted");
+    if (it.state === "HELD") return V("held", "Held");
+    if (it.state === "CANNOT_VERIFY") return V("cannot", "Cannot verify");
+    if (it.state === "RECONCILED") {
+      if (it.flags.includes("DUPLICATE_DEBIT")) return V("dupdebit", "Duplicate debit");
+      if (it.flags.includes("RETURNED_PAYMENT")) return V("returned", "Returned payment", "Returned");
+      if ((ui.exByItem[it.item_id] || []).includes("UNMATCHED_PAYMENT")) return V("unmatched", "Unmatched");
+      return V("matched", "Matched");
+    }
+    return V("other", words(it.state));
+  }
   const p = it.payment;
   if (p) {
-    if (p.status === "PROVIDER_CONFIRMED") return {key: "paid", label: "Paid", board: "Paid"};
-    if (p.status === "RETURNED" || p.status === "REVERSED") return {key: "returned", label: "Returned by bank", board: "Returned"};
-    if (p.status === "PAYMENT_UNCERTAIN") return {key: "unknown", label: "Outcome unknown", board: "Unknown"};
-    if (p.status === "FAILED") return {key: "failed", label: "Failed", board: "Failed"};
-    return {key: "sending", label: "Sending", board: "Sending"};
+    if (p.status === "PROVIDER_CONFIRMED") return V("paid", "Paid");
+    if (p.status === "RETURNED" || p.status === "REVERSED") return V("returned", "Returned by bank", "Returned");
+    if (p.status === "PAYMENT_UNCERTAIN") return V("unknown", "Outcome unknown", "Unknown");
+    if (p.status === "FAILED") return V("failed", "Declined", "Declined");
+    return V("inflight", "In flight");
   }
-  if (it.state === "HELD") return {key: "held", label: "Held", board: "Held"};
-  if (it.state === "AWAITING_APPROVAL") return {key: "approval", label: "Needs approval", board: "Needs approval"};
-  return {key: "other", label: words(it.state), board: words(it.state)};
+  if (it.state === "HELD") return V("held", "Held");
+  if (it.state === "AWAITING_APPROVAL") return V("approval", "Needs approval");
+  if (it.state === "REJECTED") return V("rejected", "Rejected");
+  if (it.state === "CANNOT_VERIFY") return V("cannot", "Cannot verify");
+  return V("other", words(it.state));
 }
-const toneOf = k => ({paid: "go", returned: "stop", held: "stop", failed: "stop", unknown: "wait", approval: "wait", sending: "steel"}[k] || "mute");
+const toneOf = k => ({paid: "go", posted: "go", matched: "go", returned: "stop", held: "stop", failed: "stop", dupdebit: "stop", rejected: "stop",
+                      unknown: "wait", approval: "wait", cannot: "wait", unmatched: "wait", inflight: "steel"}[k] || "mute");
 
 function lifecycle(it) {
   const p = it.payment, a = it.approval, names = ["Checked", "Approved", "Sent", "Confirmed", "Settled"];
@@ -58,33 +75,50 @@ function lifecycle(it) {
 
 const copyCmd = c => `<div class="cmd"><code>${esc(c)}</code><button type="button" data-copy="${esc(c)}" data-k="copy-${esc(c.slice(-12))}">Copy</button></div>`;
 const invoices = s => s.items.filter(i => i.kind === "Invoice");
+const runName = (s, id) => (s.runs.find(r => r.run_id === id) || {}).label || id;
+const ago = ts => ts ? new Date(ts).toLocaleTimeString("en-IN", {hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false}) : "";
 const openEx = s => s.exceptions.filter(e => !CLOSED.includes(e.status));
 const awaiting = s => invoices(s).filter(i => i.state === "AWAITING_APPROVAL" && !i.payment);
 
 /* ---------- pages ---------- */
+const FOOT = [["paid", "paid"], ["approval", "need approval"], ["inflight", "in flight"], ["unknown", "unknown"], ["held", "held"], ["failed", "declined"],
+              ["returned", "returned"], ["rejected", "rejected"], ["cannot", "cannot verify"], ["posted", "posted"], ["matched", "matched"],
+              ["dupdebit", "duplicate debits"], ["unmatched", "unmatched"]];
+
 function boardHTML(s, limit) {
-  const inv = invoices(s).slice().sort((a, b) => (a.due_date || "").localeCompare(b.due_date || "")).slice(0, limit);
-  if (!inv.length) return `<div class="board"><div class="board-empty">No invoices in this run</div></div>`;
-  const rows = inv.map(it => {
-    const v = verdict(it);
+  const all = s.items.slice().sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+  if (!all.length) return `<div class="board"><div class="board-empty">Nothing has run yet</div></div>`;
+  const rows = all.slice(0, limit).map(it => {
+    const v = verdict(it), isInv = it.kind === "Invoice";
     const changed = ui.prev && ui.prev[it.item_id] && ui.prev[it.item_id] !== v.key;
-    return `<a class="brow" href="/payments#${esc(it.ref)}"><span>${esc(dmon(it.due_date || it.date))}</span><span>${esc(it.label)}</span>
-      <span class="ref">${esc(it.ref)}</span><span class="amt num">${inr(it.amount_paise || 0)}</span>
+    return `<a class="brow" href="${isInv ? "/payments#" + esc(it.ref) : "/payments#bank"}"><span class="num">${esc(ago(it.updated_at))}</span><span>${esc(it.label)}</span>
+      <span class="ref">${esc(it.ref)}</span><span class="amt num">${it.amount_paise == null ? "n/a" : inr(it.amount_paise)}</span>
       <span><span class="st ${v.key}${changed ? " flip" : ""}">${esc(v.board)}</span></span></a>`;
   }).join("");
-  const c = k => invoices(s).filter(i => verdict(i).key === k).length;
-  return `<div class="board" role="table" aria-label="Invoice payments">
-    <div class="board-head" role="row"><span>Due</span><span>Payee</span><span>Invoice</span><span style="text-align:right">Amount</span><span>Status</span></div>
+  const n = k => all.filter(i => verdict(i).key === k).length;
+  const foot = FOOT.filter(([k]) => n(k)).map(([k, l]) => `<span><b>${n(k)}</b> ${l}</span>`).join("");
+  return `<div class="board" role="table" aria-label="Latest changes across every run">
+    <div class="board-head" role="row"><span>Updated</span><span>Payee</span><span>Reference</span><span style="text-align:right">Amount</span><span>Status</span></div>
     ${rows}
-    <div class="board-foot"><span><b>${c("paid")}</b> paid</span><span><b>${c("approval")}</b> need approval</span><span><b>${c("held")}</b> held</span><span><b>${c("returned")}</b> returned</span></div></div>`;
+    <div class="board-foot">${foot}<span class="more">${all.length > limit ? `Showing the ${limit} newest of ${all.length}` : `${all.length} items`}</span></div></div>`;
 }
 
 function statementHTML(s) {
-  const m = s.money, total = m.paid_paise + m.held_paise + m.returned_paise || 1;
+  const m = s.money, total = m.paid_paise + m.inflight_paise + m.awaiting_paise + m.held_paise + m.returned_paise || 1;
   const ln = (label, v, tone, col) => `<div class="ln"><span>${label}</span><b class="num tone-${tone}">${inr(v)}</b><div class="bar"><i style="width:${(100 * v / total).toFixed(1)}%;background:${col}"></i></div></div>`;
-  return `<div class="stmt">${ln("Paid to vendors", m.paid_paise, "go", "var(--go)")}${ln("Held, not paid", m.held_paise, "stop", "var(--stop)")}
-    ${ln("Returned by the bank", m.returned_paise, "wait", "var(--wait)")}
-    <div class="ln total"><span>Invoice value across all three</span><b class="num">${inr(m.paid_paise + m.held_paise + m.returned_paise)}</b></div></div>`;
+  return `<div class="stmt">${ln("Paid to vendors", m.paid_paise, "go", "var(--go)")}${ln("In flight with the provider", m.inflight_paise, "steel", "var(--steel)")}
+    ${ln("Waiting for approval", m.awaiting_paise, "wait", "var(--wait)")}${ln("Held, not paid", m.held_paise, "stop", "var(--stop)")}
+    ${ln("Returned by the bank", m.returned_paise, "stop", "var(--stop)")}</div>`;
+}
+
+function runsHTML(s) {
+  if (!s.runs.length) return `<div class="empty">No runs yet. Start one with <code>python -m paypilot run --scenario PATH</code>.</div>`;
+  return `<div class="tbl"><table><thead><tr><th>Run</th><th>Request</th><th>Items</th><th>Outcomes</th><th class="r">Open exceptions</th></tr></thead><tbody>` +
+    s.runs.map(r => `<tr${ui.run === r.run_id ? ' style="background:color-mix(in srgb,var(--steel) 9%,transparent)"' : ""}>
+      <td><button type="button" class="linkbtn" data-run="${esc(r.run_id)}" data-k="run-${esc(r.run_id)}"><b>${esc(r.label)}</b></button><div class="small mute">${esc(r.run_id)}, ${esc(ago(r.started_at))}</div></td>
+      <td class="small mute">${esc(r.request_id)}</td><td class="num">${r.items}</td>
+      <td class="small">${Object.entries(r.states).map(([k, n]) => `${n} ${esc(words(k).toLowerCase())}`).join(", ") || "none"}</td>
+      <td class="r num ${r.open_exceptions ? "tone-stop" : ""}">${r.open_exceptions}</td></tr>`).join("") + `</tbody></table></div>`;
 }
 
 function attentionHTML(s) {
@@ -95,25 +129,72 @@ function attentionHTML(s) {
   return rows ? `<div class="list">${rows}</div>` : `<div class="empty">Nothing needs a person right now.</div>`;
 }
 
+/* Turn a raw audit event into a sentence a person can read, and say which item it is about. Internal bookkeeping steps are not "key". */
+const INTERNAL_ITEM = ["PARSED", "RESOLVED", "CHECKED", "DECIDED"];
+const ITEM_SAYS = {AWAITING_APPROVAL: "Waiting for approval", APPROVED: "Approved", PAYMENT_IN_PROGRESS: "Payment sent to the provider", PAID: "Paid",
+  HELD: "Held", POSTED: "Posted to the books", CANNOT_VERIFY: "Cannot verify", REJECTED: "Rejected", RECONCILED: "Reconciled",
+  PAYMENT_UNCERTAIN: "Outcome unknown", FAILED: "Failed"};
+const PAY_SAYS = {CREATED: "Payment created", SUBMITTED: "Submitted to the provider", PROVIDER_CONFIRMED: "Provider confirmed the payment",
+  RETURNED: "Money returned by the bank", REVERSED: "Payment reversed", FAILED: "Provider declined the payment", PAYMENT_UNCERTAIN: "Outcome unknown, will reconcile"};
+function explain(e, s) {
+  const item = {}, byPay = {}, byExc = {}, byAppr = {};
+  s.items.forEach(i => { item[i.item_id] = i; if (i.payment) byPay[i.payment.payment_id] = i; });
+  s.exceptions.forEach(x => { byExc[x.exception_id] = x; });
+  s.approvals.forEach(a => { byAppr[a.approval_id] = a; });
+  let it = null, text = "", major = true, tone = "mute";
+  const t = e.entity_type, n = e.new_state, why = e.reason ? e.reason.split(";")[0] : "";
+  if (t === "item") {
+    it = item[e.entity_id];
+    major = !INTERNAL_ITEM.includes(n);
+    text = ITEM_SAYS[n] || words(n);
+    if (n === "APPROVED") text = "Approved by " + e.actor;
+    if (n === "HELD" && why) text = "Held: " + why;
+    tone = {PAID: "go", POSTED: "go", RECONCILED: "go", HELD: "stop", REJECTED: "stop", FAILED: "stop"}[n] || "mute";
+  } else if (t === "payment") {
+    it = byPay[e.entity_id];
+    text = PAY_SAYS[n] || words(n);
+    major = !(e.previous_state === n);                       // "SUBMITTED to SUBMITTED: reference saved" is bookkeeping
+    if (e.previous_state === "CREATED" && n === "SUBMITTED") major = false;
+    tone = {PROVIDER_CONFIRMED: "go", RETURNED: "stop", REVERSED: "stop", FAILED: "stop", PAYMENT_UNCERTAIN: "wait"}[n] || "steel";
+  } else if (t === "exception") {
+    const x = byExc[e.entity_id]; it = x && item[x.item_id];
+    text = "Exception: " + (why || words(x?.type)); tone = x && SEV[x.severity] <= 1 ? "stop" : "wait";
+  } else if (t === "approval") {
+    const a = byAppr[e.entity_id]; it = a && item[a.item_id];
+    text = "Approval " + words(n || "recorded").toLowerCase() + (a?.reviewer ? " by " + a.reviewer : ""); major = false;
+  } else if (t === "recovery_case") {
+    text = "Recovery case " + words(n || "opened").toLowerCase(); tone = "wait";
+  } else text = words(t) + ": " + words(n);
+  return {ref: it ? it.ref : "", run: it ? runName(s, it.run_id) : "", text, major, tone};
+}
+
+function feedRows(s, events) {
+  return events.map(e => { const x = explain(e, s);
+    return `<div class="feed-row"><time class="num">${esc(ago(e.ts))}</time><b>${esc(x.ref || "")}</b>
+      <span class="tone-${x.tone}">${esc(x.text)}</span><span class="mute small">${esc(x.run)}</span></div>`; }).join("");
+}
+
 function activityHTML(s) {
-  const ev = s.audit.slice(0, 6);
-  return ev.length ? `<div class="list">${ev.map(e => `<div class="audit-row"><time class="num">${hhmm(e.ts)}</time><span class="mute">${esc(words(e.entity_type))}</span><span>${esc(e.previous_state || "new")} to <b>${esc(e.new_state || "")}</b> <span class="mute">by ${esc(e.actor)}</span></span></div>`).join("")}</div>` : `<div class="empty">No activity yet.</div>`;
+  const ev = s.audit.filter(e => explain(e, s).major).slice(0, 10);
+  return ev.length ? `<div class="list">${feedRows(s, ev)}</div>` : `<div class="empty">No activity yet.</div>`;
 }
 
 function overview(s) {
-  return `<section><h2>Payments board</h2><p class="lede">Every invoice in this run, by due date. Open one for the full story.</p>${boardHTML(s, 8)}</section>
+  return `<section><h2>Live board</h2><p class="lede">Every invoice, bank line and statement line from every run, newest change first. A status flips when it changes.</p>${boardHTML(s, 12)}</section>
+  <section class="sec"><h2>Runs</h2><p class="lede">Each run is one batch the system worked through. Select one to focus every page on it.</p>${runsHTML(s)}</section>
   <div class="cols2 sec"><section><h2>Money position</h2><p class="lede">Where the invoice value sits right now.</p>${statementHTML(s)}</section>
   <section><h2>Needs a person</h2><p class="lede">Waiting for approval, or blocked by an exception.</p>${attentionHTML(s)}</section></div>
   <section class="sec"><h2>Latest activity</h2><p class="lede">Most recent state changes. The full trail is under Books.</p>${activityHTML(s)}</section>`;
 }
 
+let S = null;   // the state being rendered, for helpers that need other runs
 function payRow(it) {
   const v = verdict(it), tone = toneOf(v.key), isOpen = ui.open.has(it.ref);
   const why = it.reasons.map(r => `<li>${esc(r.text || words(r.code))}<small>${esc(words(r.code))}${r.rule ? ", rule " + esc(r.rule) : ""}</small></li>`).join("");
   const att = (it.payment?.attempts || []).map(a => `Attempt ${a.no}: ${esc(words(a.outcome))}${a.error ? " (" + esc(a.error) + ")" : ""}`).join("; ");
   return `<div class="pay${isOpen ? " open" : ""}" id="${esc(it.ref)}" data-ref="${esc(it.ref)}">
     <button type="button" aria-expanded="${isOpen}" data-k="pay-${esc(it.ref)}">
-      <div class="who"><b>${esc(it.label)}</b><span>${esc(it.ref)}${it.invoice_no ? ", " + esc(it.invoice_no) : ""}</span></div>
+      <div class="who"><b>${esc(it.label)}</b><span>${esc(it.ref)}${it.invoice_no ? ", " + esc(it.invoice_no) : ""}, ${esc(runName(S, it.run_id))}</span></div>
       ${lifecycle(it)}
       <div class="amt"><b class="num">${inr(it.amount_paise || 0)}</b><span class="tag tone-${tone}">${esc(v.label)}</span></div>
     </button>
@@ -145,7 +226,7 @@ function payments(s) {
       <td class="tag tone-${tone[x.state] || "mute"}">${esc(words(x.state))}</td><td class="r num">${inrFull(x.amount_paise || 0)}</td></tr>`).join("") + `</tbody></table></div>`
       : `<div class="empty">No bank lines in this run.</div>`);
   }
-  const opts = [["all", "All"], ["approval", "Needs approval"], ["paid", "Paid"], ["held", "Held"], ["returned", "Returned"], ["unknown", "Outcome unknown"]];
+  const opts = [["all", "All"], ["approval", "Needs approval"], ["inflight", "In flight"], ["unknown", "Outcome unknown"], ["paid", "Paid"], ["held", "Held"], ["failed", "Declined"], ["returned", "Returned"], ["rejected", "Rejected"], ["cannot", "Cannot verify"]];
   return tabs + chips("pay", opts, inv, i => verdict(i).key) +
     (shown.length ? `<div>${shown.map(payRow).join("")}</div>` : `<div class="empty">No invoices match this filter.</div>`);
 }
@@ -179,8 +260,8 @@ function approvals(s) {
     : `<div class="empty">Nothing is waiting for approval.</div>`;
   const done = s.approvals.length ? `<div class="tbl"><table><thead><tr><th>Invoice</th><th>Decision</th><th>Approver</th><th>When</th><th>Bound to decision</th></tr></thead><tbody>` +
     s.approvals.map(a => { const it = byItem[a.item_id]; const tone = {APPROVED: "go", REJECTED: "stop", PENDING: "wait"}[a.status] || "mute";
-      return `<tr><td>${esc(it ? it.ref : a.item_id.slice(0, 8))}<div class="small mute">${esc(it ? it.label : "")}</div></td><td class="tag tone-${tone}">${esc(words(a.status))}</td>
-      <td>${esc(a.reviewer || "Waiting")}${a.overrides.length ? `<div class="small mute">Overrides: ${a.overrides.map(esc).join(", ")}</div>` : ""}</td><td class="num">${esc((a.decided_at || a.requested_at || "").slice(11, 16))}</td><td><code>${esc(a.decision_hash)}</code></td></tr>`; }).join("") + `</tbody></table></div>`
+      return `<tr><td>${esc(it ? it.ref : a.item_id.slice(0, 8))}${a.approval_seq > 1 ? ` <span class="small mute">(approval ${a.approval_seq}, after a decline)</span>` : ""}<div class="small mute">${esc(it ? it.label : "")}</div></td><td class="tag tone-${tone}">${esc(words(a.status))}</td>
+      <td>${esc(a.reviewer || "Waiting")}${a.overrides.length ? `<div class="small mute">Overrides: ${a.overrides.map(esc).join(", ")}</div>` : ""}</td><td class="num">${esc(ago(a.decided_at || a.requested_at))}</td><td><code>${esc(a.decision_hash)}</code></td></tr>`; }).join("") + `</tbody></table></div>`
     : `<div class="empty">No approvals recorded yet.</div>`;
   return `<section><h2>Waiting for approval</h2><p class="lede">Approving happens in the CLI so the approver allowlist and the never-overridable checks always apply. This page only reads.</p>${waiting}</section>
     <section class="sec"><h2>Decided</h2><p class="lede">Each approval is tied to the exact decision it covered. If the facts change, it no longer applies.</p>${done}</section>`;
@@ -195,11 +276,10 @@ function books(s) {
   const ref = Object.fromEntries(s.items.map(i => [i.item_id, i]));
   const jr = s.journal.length ? `<div class="journal">${s.journal.map(e => `<div class="je"><b>${esc(words(e.kind))}</b> <span class="mute">${esc(ref[e.item_id]?.ref || "")}, ${esc(e.memo)}</span>
     <table><tbody>${e.lines.map(l => `<tr><td>${esc(l.account)}</td><td class="r num">${l.debit_paise ? inrFull(l.debit_paise) : ""}</td><td class="r num">${l.credit_paise ? inrFull(l.credit_paise) : ""}</td></tr>`).join("")}</tbody></table></div>`).join("")}</div>` : `<div class="empty">No entries.</div>`;
-  const ents = [...new Set(s.audit.map(e => e.entity_type))], af = ui.filter.audit || "all";
-  const aud = s.audit.filter(e => af === "all" || e.entity_type === af);
-  const audit = chips("audit", [["all", "All"], ...ents.map(e => [e, words(e)])], s.audit, e => e.entity_type) +
-    (aud.length ? `<div class="list">${aud.slice(0, 80).map(e => `<div class="audit-row"><time class="num">${hhmm(e.ts)}</time><span class="mute">${esc(words(e.entity_type))} ${esc(String(e.entity_id).slice(0, 8))}</span>
-    <span>${esc(e.previous_state || "new")} to <b>${esc(e.new_state || "")}</b><span class="mute"> by ${esc(e.actor)}${e.reason ? ": " + esc(e.reason) : ""}</span></span></div>`).join("")}</div>` : `<div class="empty">No events.</div>`);
+  const af = ui.filter.audit || "key";
+  const aud = s.audit.filter(e => af === "all" || explain(e, s).major);
+  const mode = `<div class="filters" role="group" aria-label="Detail">${[["key", "Key events"], ["all", "Every step"]].map(([k, l]) => `<button type="button" data-filter="audit:${k}" data-k="f-audit-${k}" aria-pressed="${af === k}">${l}<span class="c num">${k === "all" ? s.audit.length : s.audit.filter(e => explain(e, s).major).length}</span></button>`).join("")}</div>`;
+  const audit = mode + (aud.length ? `<div class="list">${feedRows(s, aud.slice(0, 120))}</div>` : `<div class="empty">No events.</div>`);
   const k = s.cost, money = v => "₹" + v.toFixed(2);
   const head = k.status === "UNKNOWN" ? `<span class="unknown">UNKNOWN</span>` : k.status === "PARTIAL" ? `${money(k.total)} <span class="unknown">plus unknown</span>` : money(k.total);
   const cost = (k.calls || k.cache_hits) ? `<p style="font-size:24px;font-weight:650;margin:0 0 4px" class="num">${head}</p>
@@ -207,7 +287,7 @@ function books(s) {
     <div class="tbl"><table><thead><tr><th>Provider</th><th class="r">Spend</th></tr></thead><tbody>${k.providers.map(p => `<tr><td>${esc(p.provider)}</td><td class="r num">${p.unknown ? `<span class="unknown">UNKNOWN</span>` : money(p.spend)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No paid lookups yet.</div>`;
   return `<div class="cols2"><section><h2>Trial balance</h2><p class="lede">Every journal entry balances.</p>${trial}</section><section><h2>Lookup cost</h2><p class="lede">A missing price is shown as unknown, never zero.</p>${cost}</section></div>
     <section class="sec"><h2>Journal</h2><p class="lede">Each posting and payment, line by line.</p>${jr}</section>
-    <section class="sec"><h2>Audit trail</h2><p class="lede">Every state change, newest first.</p>${audit}</section>`;
+    <section class="sec"><h2>Audit trail</h2><p class="lede">What happened, to which item, newest first. Switch to every step to see the system bookkeeping too.</p>${audit}</section>`;
 }
 
 const VIEWS = {overview, payments, exceptions, approvals, books};
@@ -222,13 +302,16 @@ function shell(s) {
   const p = s.payment_providers;
   $("#provider").textContent = p.includes("razorpayx_test") ? "RazorpayX test mode, no real money" : "Simulated provider, no real money";
   const sel = $("#run");
-  if (sel.options.length !== s.runs.length + 1) {
-    sel.innerHTML = `<option value="">All runs</option>` + s.runs.map(r => `<option value="${esc(r.run_id)}">${esc(r.run_id)}</option>`).join("");
+  if (sel.options.length !== s.runs.length + 1 || [...sel.options].some((o, i) => i && !o.textContent.startsWith(s.runs[i - 1].label + " (" + s.runs[i - 1].items))) {
+    sel.innerHTML = `<option value="">All runs</option>` + s.runs.map(r => `<option value="${esc(r.run_id)}">${esc(r.label)} (${r.items} items)</option>`).join("");
     sel.value = ui.run;
   }
 }
 
 function render(s) {
+  S = s;
+  ui.exByItem = {};
+  s.exceptions.forEach(e => { if (e.item_id) (ui.exByItem[e.item_id] ||= []).push(e.type); });
   const focus = document.activeElement?.dataset?.k, y = window.scrollY;
   shell(s);
   $("#view").innerHTML = VIEWS[here[0]](s);
@@ -245,6 +328,8 @@ document.addEventListener("click", ev => {
   }
   const f = ev.target.closest("[data-filter]");
   if (f) { const [g, k] = f.dataset.filter.split(":"); ui.filter[g] = k; ui.lastBody = ""; load(); return; }
+  const r = ev.target.closest("[data-run]");
+  if (r) { ui.run = r.dataset.run; $("#run").value = ui.run; try { sessionStorage.setItem("pp-run", ui.run); } catch (x) {} ui.lastBody = ""; ui.prev = null; load(); return; }
   const c = ev.target.closest("[data-copy]");
   if (c) {
     const done = () => { c.textContent = "Copied"; setTimeout(() => { c.textContent = "Copy"; }, 1500); };
@@ -259,6 +344,9 @@ async function load() {
     const text = await r.text(), s = JSON.parse(text);
     if (!r.ok) throw new Error(s.error || r.status);
     $("#error").innerHTML = "";
+    if (ui.run && s.runs.length && !s.runs.some(r => r.run_id === ui.run)) {   // the remembered run no longer exists (demo was reset)
+      ui.run = ""; try { sessionStorage.removeItem("pp-run"); } catch (x) {} $("#run").innerHTML = ""; ui.lastBody = ""; return load();
+    }
     if (text !== ui.lastBody) {
       ui.lastBody = text; render(s);
       if (location.hash && !ui.hashed) { ui.hashed = true; const t = document.getElementById(decodeURIComponent(location.hash.slice(1)));
@@ -271,4 +359,4 @@ async function load() {
     $("#error").innerHTML = `<div class="err">Can't read the database: ${esc(e.message)}. Start the server with <code>python scripts/dashboard.py --db PATH</code>.</div>`;
   }
 }
-load(); setInterval(load, 3000);
+load(); setInterval(load, 2000);

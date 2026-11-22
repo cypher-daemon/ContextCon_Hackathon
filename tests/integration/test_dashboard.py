@@ -69,7 +69,7 @@ def db(tmp_path):
 
 def test_money_buckets_never_overlap(db):
     s = dash.build_state(db, "R1")
-    assert s["money"] == {"paid_paise": 5000, "held_paise": 2000, "returned_paise": 3000}
+    assert (s["money"]["paid_paise"], s["money"]["held_paise"], s["money"]["returned_paise"]) == (5000, 2000, 3000)
 
 
 def test_run_scope_applies_to_every_panel(db):
@@ -153,7 +153,7 @@ def test_one_request_sees_one_snapshot_even_if_a_write_lands_mid_build(db, monke
 def test_before_any_run_everything_is_zero(tmp_path):
     for db in (tmp_path / "missing" / "pp.db", _empty_file(tmp_path)):
         s = dash.build_state(db, None)
-        assert all(v == 0 for v in s["counts"].values()) and s["money"] == {"paid_paise": 0, "held_paise": 0, "returned_paise": 0}
+        assert all(v == 0 for v in s["counts"].values()) and all(v == 0 for v in s["money"].values())
         assert s["items"] == s["exceptions"] == s["runs"] == []
 
 
@@ -161,3 +161,18 @@ def _empty_file(tmp_path):
     p = tmp_path / "empty.db"
     sqlite3.connect(p).close()                      # a database file with no tables yet
     return p
+
+
+def test_runs_are_named_by_what_they_did_and_numbered_when_repeated(db):
+    con = connect(db)
+    for rid, op, t in [("R3", "PAY_INVOICES", "2026-11-22T09:00:00+00:00"), ("R4", "RECONCILE", "2026-11-22T10:00:00+00:00")]:
+        con.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (rid, "c1", "rq-" + rid, "sha-" + rid, op, "ch", "ph", "dh", "{}", "COMPLETE", t, t))
+    con.execute("INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", ("R5", "c1", "rq-R5", "sha-R5", None, "ch", "ph", "dh", "{}", "COMPLETE", T, T))
+    con.close()
+    runs = {r["run_id"]: r for r in dash.build_state(db, None)["runs"]}
+    assert runs["R1"]["label"] == "Pay invoices #1" and runs["R2"]["label"] == "Pay invoices #2" and runs["R3"]["label"] == "Pay invoices #3"
+    assert runs["R4"]["label"] == "Reconcile statement"                # only one, so no number
+    assert runs["R5"]["label"] == "Unsupported request"                # no operation
+    assert runs["R1"]["items"] == 3 and runs["R1"]["states"] == {"PAID": 1, "HELD": 2}
+    assert runs["R1"]["open_exceptions"] == 1                          # RESOLVED / FALSE_POSITIVE do not count
+    assert [r["run_id"] for r in dash.build_state(db, None)["runs"]][0] == "R4"   # newest first

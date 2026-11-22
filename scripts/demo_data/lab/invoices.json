@@ -1,0 +1,80 @@
+[
+ {
+  "invoice_id": "LAB-01",
+  "vendor_name": "Delhivery Limited",
+  "invoice_number": "DLV/2026-27/00501",
+  "invoice_date": "2026-11-10",
+  "amount_inr": "15000.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000003",
+  "remit_ifsc": "‹IFSC-B›",
+  "vendor_domain": "delhivery.com",
+  "po_number": "PO-NB-2001",
+  "due_date": "2026-11-30"
+ },
+ {
+  "invoice_id": "LAB-02",
+  "vendor_name": "VRL Logistics Limited",
+  "invoice_number": "VRL/11/2026/0401",
+  "invoice_date": "2026-11-10",
+  "amount_inr": "18500.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000005",
+  "remit_ifsc": "‹IFSC-C›",
+  "vendor_domain": "vrlgroup.in",
+  "po_number": "PO-NB-2002",
+  "due_date": "2026-11-30"
+ },
+ {
+  "invoice_id": "LAB-03",
+  "vendor_name": "Blue Dart Express Limited",
+  "invoice_number": "BDE/26-27/8001",
+  "invoice_date": "2026-11-11",
+  "amount_inr": "9800.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000004",
+  "remit_ifsc": "‹IFSC-B›",
+  "vendor_domain": "bluedart.com",
+  "po_number": "PO-NB-2003",
+  "due_date": "2026-11-30"
+ },
+ {
+  "invoice_id": "LAB-04",
+  "vendor_name": "Indian Oil Corporation Limited",
+  "invoice_number": "IOC/NB/2026/1301",
+  "invoice_date": "2026-11-11",
+  "amount_inr": "41000.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000006",
+  "remit_ifsc": "‹IFSC-C›",
+  "vendor_domain": "iocl.com",
+  "po_number": "PO-NB-2004",
+  "due_date": "2026-11-30"
+ },
+ {
+  "invoice_id": "LAB-05",
+  "vendor_name": "Indian Oil Corporation Limited",
+  "invoice_number": "IOC/NB/2026/1302",
+  "invoice_date": "2026-11-12",
+  "amount_inr": "27500.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000006",
+  "remit_ifsc": "‹IFSC-C›",
+  "vendor_domain": "iocl.com",
+  "po_number": "PO-NB-2005",
+  "due_date": "2026-11-30"
+ },
+ {
+  "invoice_id": "LAB-06",
+  "vendor_name": "Delhivery Limited",
+  "invoice_number": "DLV/2026-27/00502",
+  "invoice_date": "2026-11-12",
+  "amount_inr": "33000.00",
+  "currency": "INR",
+  "remit_bank_account": "000000000003",
+  "remit_ifsc": "‹IFSC-B›",
+  "vendor_domain": "delhivery.com",
+  "po_number": "PO-NB-2006",
+  "due_date": "2026-11-30"
+ }
+]

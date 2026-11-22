@@ -8,6 +8,20 @@ The repository contains working modules for request and batch loading, vendor-ma
 
 This is a prototype, not a demonstrated production or full acceptance build. Crustdata and website adapters exist but are not called by the live matcher. The INR cost conversion for Crustdata credits remains unknown. Dedicated `tests/integration` and `tests/crash` suites are absent, as are scenario fixtures for SC-12 and SC-13. See [TECHNICAL.md](TECHNICAL.md) for observed gaps and [docs/TASKS.md](docs/TASKS.md) for the project plan.
 
+## See it work in 2 minutes
+```bash
+python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+cp .env.example .env            # set BANK_HMAC_KEY to a random value (demo.sh falls back to a throwaway key)
+python scripts/dashboard.py --db .demo/var/paypilot.db     # terminal 1: open http://127.0.0.1:8765, it reads zero
+DEMO_PAUSE=1 bash scripts/demo.sh                          # terminal 2: Enter starts each scene (DEMO_BEAT=4 holds 4s after each)
+```
+The demo runs 21 scenes on the FakeProvider (no real money, nothing under `clients/` or `scenarios/` is modified), and each scene prints what to watch on the dashboard:
+month-end bank posting and its edge cases (wrong month, a credit, a two-vendor tie); six carrier invoices (already paid, price mismatch, no PO, look-alike vendor, missing number); refusals (never-overridable flag, non-approver, unverifiable item); one approval, one payment, a second approve is a no-op; an override with a written reason; a rejection; then the payment failures: a `kill -9` mid-payment, a lost reply (outcome unknown), a provider that is still processing, a decline with a fresh-approval retry, and a bank return after confirmed success (REVERSAL entry, CRITICAL exception, vendor contained) with the containment refusal and its evidence-backed release; then a duplicate invoice re-sent in another file, a bank-change fraud attempt, a refusal against the contained vendor, an unsupported request, a bank-statement reconcile (matched, duplicate debit, returned, unmatched), and `audit verify` replaying the books. Outputs land in `.demo/out/<run_id>/`.
+
+**Dashboard** (`scripts/dashboard.py`, read-only, stdlib only, localhost): Overview (live board of every item in every run, runs by what they did, money position, what needs a person), Payments, Exceptions, Approvals (with the exact CLI command to run) and Books (trial balance, journal, audit trail, cost). It opens the database read-only, in one snapshot per request, and shows zeros until the first run.
+
+Fault injection for your own drills: `PAYPILOT_CRASH_AT=<point>` kills the process at a named point (see `paypilot/core/crash.py`); `PAYPILOT_FAKE_FAULT=TIMEOUT_AFTER_CREATE|TIMEOUT_BEFORE_CREATE|DECLINE|PROCESSING|RETURNED_AFTER_SUCCESS|UNKNOWN_STATUS` makes the FakeProvider misbehave; `python -m paypilot fake-provider set REF STATUS` moves a payment by hand like the RazorpayX test Dashboard.
+
 ## Quick start
 
 ```bash

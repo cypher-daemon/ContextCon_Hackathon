@@ -33,6 +33,29 @@ from paypilot.schemas import ExceptionStatus, ItemState, PaymentStatus  # noqa: 
 CLOSED_EXCEPTION = {ExceptionStatus.RESOLVED, ExceptionStatus.FALSE_POSITIVE, ExceptionStatus.ACCEPTED_RISK,
                     ExceptionStatus.CLOSED_NO_ACTION}
 RETURNED = {PaymentStatus.RETURNED, PaymentStatus.REVERSED}
+IN_FLIGHT = {PaymentStatus.CREATED, PaymentStatus.SUBMITTED, PaymentStatus.PAYMENT_UNCERTAIN}
+OP_LABEL = {"POST_BANK_LINES": "Post bank lines", "PAY_INVOICES": "Pay invoices", "RECONCILE": "Reconcile statement"}
+
+
+def label_runs(runs: list[dict], stats: list[dict], open_exc: list[dict]) -> list[dict]:
+    """Name every run by what it did. Two runs of the same kind are numbered in the order they started."""
+    states: dict[str, dict] = {}
+    for r in stats:
+        states.setdefault(r["run_id"], {})[r["state"]] = r["n"]
+    opened = {r["run_id"]: r["n"] for r in open_exc}
+    by_op: dict[str, int] = {}
+    for r in runs:
+        by_op[r["operation"]] = by_op.get(r["operation"], 0) + 1
+    seen: dict[str, int] = {}
+    out = []
+    for r in sorted(runs, key=lambda x: x["started_at"]):          # oldest first so "#1" is the first one run
+        op = r["operation"]
+        seen[op] = seen.get(op, 0) + 1
+        base = OP_LABEL.get(op, "Unsupported request")
+        st = states.get(r["run_id"], {})
+        out.append({**r, "label": base + (f" #{seen[op]}" if by_op[op] > 1 else ""), "items": sum(st.values()),
+                    "states": st, "open_exceptions": opened.get(r["run_id"], 0)})
+    return sorted(out, key=lambda x: x["started_at"], reverse=True)    # newest first
 
 
 def default_db() -> Path:
@@ -61,7 +84,7 @@ def empty_state(db: Path) -> dict:
     """Nothing has run yet (no database, or no tables): every figure is zero and every list is empty."""
     zero = {"items": 0, "paid": 0, "held": 0, "uncertain": 0, "open_exceptions": 0, "blocking": 0, "pending_approvals": 0}
     return {"db": str(db), "runs": [], "run_id": None, "counts": zero,
-            "money": {"paid_paise": 0, "held_paise": 0, "returned_paise": 0},
+            "money": {"paid_paise": 0, "held_paise": 0, "returned_paise": 0, "inflight_paise": 0, "awaiting_paise": 0},
             "items": [], "exceptions": [], "approvals": [], "audit": [],
             "cost": {"status": "KNOWN", "total": 0.0, "unconfirmed": 0.0, "calls": 0, "cache_hits": 0, "providers": []},
             "trial_balance": [], "entries": [], "journal": [], "payment_providers": []}
@@ -84,7 +107,7 @@ def _build_state(db: Path, run_id: str | None) -> dict:
         # One read transaction = one point-in-time snapshot (WAL). Without it a payment committing between two of the
         # queries below could show e.g. a confirmed payment with no journal entry. Closing the connection ends it.
         con.execute("BEGIN")
-        runs = rows(con, "SELECT run_id, client_id, operation, status, started_at FROM runs ORDER BY started_at DESC")
+        runs = rows(con, "SELECT run_id, client_id, request_id, operation, status, started_at FROM runs ORDER BY started_at DESC")
         where, args = ("WHERE run_id=?", (run_id,)) if run_id else ("", ())
         items_raw = rows(con, f"SELECT * FROM items {where} ORDER BY run_id, row_no", *args)
         item_ids = {i["item_id"] for i in items_raw}
@@ -104,17 +127,17 @@ def _build_state(db: Path, run_id: str | None) -> dict:
             p = pay.get(it["item_id"])
             a = appr.get(it["item_id"])
             name = payload.get("vendor_name_raw") or payload.get("descriptor_raw") or it["vendor_id"] or "Unresolved payee"
-            ref = payload.get("invoice_id") or payload.get("line_id") or it["source_ref"]
+            ref = payload.get("invoice_id") or payload.get("line_id") or payload.get("message_id") or it["source_ref"].rsplit("#", 1)[-1]
             items.append({
                 "item_id": it["item_id"], "run_id": it["run_id"], "kind": it["kind"], "ref": ref,
                 "label": name, "vendor_id": it["vendor_id"], "amount_paise": it["amount_paise"],
-                "date": it["item_date"], "state": it["state"], "outcome": it["outcome"],
+                "date": it["item_date"], "state": it["state"], "outcome": it["outcome"], "updated_at": it["updated_at"],
                 "proposal": decision.get("proposal"), "flags": decision.get("flags", []),
                 "reasons": [{"code": r.get("code"), "text": r.get("text"), "rule": r.get("rule_id")}
                             for r in decision.get("reasons", [])],
                 "invoice_no": payload.get("invoice_no_raw"), "due_date": payload.get("due_date"),
                 "approval": ({"status": a["status"], "reviewer": a["reviewer"], "at": a["decided_at"]} if a else None),
-                "payment": ({"status": p["status"], "settlement": p["settlement_status"], "provider": p["provider"],
+                "payment": ({"payment_id": p["payment_id"], "status": p["status"], "settlement": p["settlement_status"], "provider": p["provider"],
                              "attempts": [{"no": x["attempt_no"], "outcome": x["outcome"], "step": x["step"],
                                            "error": x["last_error"]} for x in attempts.get(p["payment_id"], [])]}
                             if p else None),
@@ -133,7 +156,7 @@ def _build_state(db: Path, run_id: str | None) -> dict:
             a["decision_hash"] = a["decision_hash"][:12]
 
         audit = rows(con, "SELECT event_id, run_id, entity_type, entity_id, previous_state, new_state, actor, reason, ts "
-                          f"FROM audit_events {where} ORDER BY event_id DESC LIMIT 200", *args)
+                          f"FROM audit_events {where} ORDER BY event_id DESC LIMIT 600", *args)
 
         # cost: the ledger's own summary. A missing price is UNKNOWN, never 0 (hard rule 7).
         scope = [run_id] if run_id else [r["run_id"] for r in runs]
@@ -188,10 +211,17 @@ def _build_state(db: Path, run_id: str | None) -> dict:
         # A payment later returned/reversed counts as returned, not paid and not held, so the three never overlap.
         invoices = [i for i in items if i["kind"] == "Invoice"]
         paid = sum(i["amount_paise"] or 0 for i in invoices if pstatus(i) == PaymentStatus.PROVIDER_CONFIRMED)
+        inflight = sum(i["amount_paise"] or 0 for i in invoices if pstatus(i) in IN_FLIGHT)
+        awaiting_value = sum(i["amount_paise"] or 0 for i in invoices if i["state"] == ItemState.AWAITING_APPROVAL and not i["payment"])
         held = sum(i["amount_paise"] or 0 for i in invoices if i["state"] == ItemState.HELD and not i["payment"])
         returned = sum(i["amount_paise"] or 0 for i in invoices if pstatus(i) in RETURNED)
-        return {"db": str(db), "runs": runs, "run_id": run_id, "counts": counts,
-                "money": {"paid_paise": paid, "held_paise": held, "returned_paise": returned},
+        closed = tuple(str(x) for x in CLOSED_EXCEPTION)
+        runs_out = label_runs(
+            runs, rows(con, "SELECT run_id, state, COUNT(*) AS n FROM items GROUP BY run_id, state"),
+            rows(con, f"SELECT run_id, COUNT(*) AS n FROM exceptions WHERE status NOT IN ({','.join('?' * len(closed))}) GROUP BY run_id", *closed))
+        return {"db": str(db), "runs": runs_out, "run_id": run_id, "counts": counts,
+                "money": {"paid_paise": paid, "held_paise": held, "returned_paise": returned,
+                          "inflight_paise": inflight, "awaiting_paise": awaiting_value},
                 "items": items, "exceptions": exceptions, "approvals": approvals, "audit": audit,
                 "cost": cost, "trial_balance": tb, "entries": entries, "journal": journal,
                 "payment_providers": providers}
