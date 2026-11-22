@@ -13,7 +13,7 @@ import unicodedata
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -21,12 +21,15 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
+from paypilot.approvals.service import approval_queue, approve_item, reject_item
 from paypilot.cli import runtime as rt
 from paypilot.cli.selector import resolve_item, resolve_run
 from paypilot.context import StageContext
 from paypilot.core import pipeline
 from paypilot.core.db import connect
+from paypilot.core.history import SqliteHistory
 from paypilot.core.lock import RunLock
+from paypilot.core.payments_repo import get_payment
 from paypilot.core.null_ext import NullExtClient
 from paypilot.io import batch
 from paypilot.ledger.budget import effective_cost_limit
@@ -51,7 +54,7 @@ def _s(value) -> str:
     return escape("".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf", "Cs")))
 
 
-console = Console(width=max(shutil.get_terminal_size((120, 20)).columns, 110))
+console = Console(width=max(shutil.get_terminal_size((140, 20)).columns, 140))
 _RUN_OPT = typer.Option(None, "--run", help="Run id (default: the most recent run).")
 
 
@@ -288,3 +291,114 @@ def ledger(run_id: Optional[str] = _RUN_OPT, as_json: bool = typer.Option(False,
         console.print(f"Calls {s.calls} · cache hits {s.cache_hits} · items {s.items} ({s.finished_items} finished) · "
                       f"₹/item {'UNKNOWN' if s.inr_per_item is None else f'{s.inr_per_item:.2f}'} · worst item "
                       f"{'UNKNOWN' if s.worst_item_inr is None else f'₹{s.worst_item_inr:.2f}'} · resolved at ₹0: {s.zero_cost_items_pct:.0f}%")
+
+
+@app.command()
+def approvals(run_id: Optional[str] = _RUN_OPT) -> None:
+    """The approval queue: what a human can act on now, with the evidence needed to decide."""
+    with rt.guarded() as stack:
+        root = rt.start()
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
+        run_id = resolve_run(con, run_id)
+        rows, blocked = approval_queue(con, run_id)
+        t = Table(title=f"Approval queue · run {run_id}")
+        widths = {"Item": {"no_wrap": True}, "Amount": {"no_wrap": True}, "Bank checks": {"min_width": 20}, "Needs override / why": {"min_width": 20}}
+        for c in ("Item", "Payee", "Amount", "Account", "Bank checks", "Needs override / why", "Evidence", "Exc."):
+            t.add_column(c, overflow="fold", **widths.get(c, {}))        # never split a flag or a bank-check label
+        short = {"ifsc_valid": "IFSC", "account_matches_master": "Acct=master", "ownership_verified": "Owner"}
+        for r in rows:
+            by_provider: dict[str, int] = {}
+            for e in r["evidence"]:
+                by_provider[e.split(":", 1)[0]] = by_provider.get(e.split(":", 1)[0], 0) + 1
+            why = ", ".join(r["flags"]) + ("\n" if r["flags"] and r["reasons"] else "") + "; ".join(r["reasons"])
+            t.add_row(_s(r["ref"]), _s(f"{r['payee'] or '-'} ({r['vendor_id'] or '-'})"), fmt_inr(r["amount_paise"]),
+                      _s(f"{r['account'] or '-'}\n…{r['account_last4'] or '----'}"),
+                      _s("\n".join(f"{short.get(k, k)} {v}" for k, v in r["bank_status"].items()) or "not checked"),
+                      _s(why or "-"), _s(", ".join(f"{p}×{n}" for p, n in by_provider.items()) or "-"), str(r["open_exceptions"]))
+        console.print(t)
+        console.print(f"{len(rows)} item(s) can be acted on · {blocked} held item(s) cannot be approved (not overridable)"
+                      "\nApprove: python -m paypilot approve ITEM --by NAME [--override FLAG --reason TEXT] · Reject: ... reject ITEM --by NAME --reason TEXT")
+
+
+def _now_session(con, run_id: str, command: str):
+    return pipeline.open_session(con, run_id, command, rt.utcnow())
+
+
+@app.command()
+def approve(item: str = typer.Argument(..., help="Exact item_id, or a unique invoice_id in the run."),
+            by: str = typer.Option(..., "--by", help="Approver name (must be in the client's allowlist, if one is set)."),
+            reason: Optional[str] = typer.Option(None, "--reason", help="Required when overriding a flag."),
+            override: Optional[List[str]] = typer.Option(None, "--override", help="A flag on a HELD item to override (repeatable)."),
+            provider: Optional[str] = typer.Option(None, "--provider", help="fake | razorpayx_test"),
+            run_id: Optional[str] = _RUN_OPT) -> None:
+    """Approve an item: binds the current decision_hash, enqueues the payment, then executes it inline."""
+    code = rt.EXIT_FAILED
+    with rt.guarded() as stack:
+        root = rt.start()
+        paths = rt.storage_paths(root)
+        with RunLock(paths["lock_path"], wait_s=float(rt.runtime_setting(root, "approvals", "lock_wait_s", 10))):
+            con = stack.enter_context(closing(rt.open_existing_db(root)))
+            run_id = resolve_run(con, run_id)
+            row = resolve_item(con, run_id, item)
+            client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
+            loaded = rt.load_all(client_id, root)
+            provider_name = rt.check_provider(provider, loaded.cfg)
+            sid = _now_session(con, run_id, "approve")
+            try:
+                rt.begin_recovery(con, run_id)                                 # reconcile first
+                result = approve_item(con, item_id=row["item_id"], reviewer=by, reason=reason, overrides=list(override or []), cfg=loaded.cfg,
+                                      policy=loaded.policy, history=SqliteHistory(con, loaded.data, client_id, run_id),
+                                      provider_name=provider_name, session_id=sid, now=rt.utcnow())
+                ref = row["source_ref"].split("#", 1)[-1]
+                ctx = _ctx(loaded, run_id, sid, client_id, Operation(row["operation"]) if row["operation"] else None, None)
+                writer.write_run_outputs(con, run_id, loaded.cfg, now=rt.utcnow(), session_id=sid, operation=ctx.operation)
+                if result.outcome == "ALREADY_APPROVED":
+                    a = result.approval
+                    console.print(f"{_s(ref)}: already approved by {_s(a.reviewer)} at {_s(a.decided_at)} (approval {a.approval_id}, seq {a.approval_seq}); nothing changed.")
+                    code = rt.EXIT_OK
+                else:
+                    console.print(f"{_s(ref)}: [bold]approved[/bold] by {_s(result.approval.reviewer)} (approval {result.approval.approval_id}, seq "
+                                  f"{result.approval.approval_seq}"
+                                  + (f", overrides {_s(result.approval.overrides)}" if result.approval.overrides else "") + ")")
+                    console.print(f"Payment {result.payment_id} CREATED · attempt {result.attempt_key}" + (" (retry after a confirmed decline)" if result.retry else ""))
+                    if loaded.cfg.payments.get("approve_executes_inline", True):
+                        from paypilot.payments.executor import execute          # A8: builds the provider adapter and runs the steps
+                        execute(get_payment(con, result.payment_id), None, ctx)
+                        writer.write_run_outputs(con, run_id, loaded.cfg, now=rt.utcnow(), session_id=sid, operation=ctx.operation)
+                    else:
+                        console.print("Inline execution is off (payments.approve_executes_inline: false): `resume` will submit it.")
+                    code = rt.EXIT_OK
+            finally:
+                pipeline.close_session(con, sid, code, rt.utcnow())
+    raise typer.Exit(code)
+
+
+@app.command()
+def reject(item: str = typer.Argument(..., help="Exact item_id, or a unique invoice_id in the run."),
+           by: str = typer.Option(..., "--by", help="Approver name."),
+           reason: str = typer.Option(..., "--reason", help="Why (required)."),
+           run_id: Optional[str] = _RUN_OPT) -> None:
+    """Reject an item (final)."""
+    code = rt.EXIT_FAILED
+    with rt.guarded() as stack:
+        root = rt.start()
+        paths = rt.storage_paths(root)
+        with RunLock(paths["lock_path"], wait_s=float(rt.runtime_setting(root, "approvals", "lock_wait_s", 10))):
+            con = stack.enter_context(closing(rt.open_existing_db(root)))
+            run_id = resolve_run(con, run_id)
+            row = resolve_item(con, run_id, item)
+            client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
+            cfg, _, _ = rt.load_cfg(client_id, root)
+            sid = _now_session(con, run_id, "reject")
+            try:
+                result = reject_item(con, item_id=row["item_id"], reviewer=by, reason=reason, cfg=cfg, session_id=sid, now=rt.utcnow())
+                writer.write_run_outputs(con, run_id, cfg, now=rt.utcnow(), session_id=sid,
+                                         operation=Operation(row["operation"]) if row["operation"] else None)
+                ref = row["source_ref"].split("#", 1)[-1]
+                a = result.approval
+                console.print(f"{_s(ref)}: " + ("already rejected" if result.outcome == "ALREADY_REJECTED" else "[bold]rejected[/bold]") +
+                              f" by {_s(a.reviewer)}: {_s(a.reason)} (approval record {a.approval_id})")
+                code = rt.EXIT_OK
+            finally:
+                pipeline.close_session(con, sid, code, rt.utcnow())
+    raise typer.Exit(code)

@@ -18,6 +18,7 @@ from paypilot.core.env import load_dotenv
 from paypilot.core.lock import LockHeld
 from paypilot.io.client_data import ClientDataError, load_client_data
 from paypilot.io.request import RequestError
+from paypilot.approvals.service import ApprovalRefused
 from paypilot.cli.selector import SelectorError
 from paypilot.policy_config import PolicyConfig
 from paypilot.reports.writer import UnknownOutputField
@@ -69,6 +70,9 @@ def guarded() -> Iterator[contextlib.ExitStack]:
                   f"       nothing was lost: the run is saved and `python -m paypilot resume` continues it once the module lands.",
                   file=sys.stderr)
             raise SystemExit(EXIT_FAILED)
+        except ApprovalRefused as e:
+            print(f"refused ({e.code}): {e.message}", file=sys.stderr)
+            raise SystemExit(EXIT_INVALID)
         except LockHeld as e:
             print(f"error: {e}", file=sys.stderr)
             raise SystemExit(EXIT_LOCK)
@@ -136,9 +140,13 @@ def begin_recovery(con: sqlite3.Connection, run_id: str) -> None:
     Open payments are reconciled with the provider BEFORE any new work; payments land in A8, so until then any existing
     payment row fails loudly instead of being ignored."""
     SqliteLedger(con, utcnow).mark_unconfirmed(run_id)
-    if con.execute("SELECT COUNT(*) FROM payments p JOIN items i ON i.item_id=p.item_id WHERE i.run_id=?", (run_id,)).fetchone()[0]:
-        raise NotImplementedError("open payments must be reconciled first (payments.reconcile, task A8)")
-
+    # A payment still CREATED (step NONE) has made no provider call, so there is nothing to reconcile. An attempt that was sent
+    # (step beyond NONE) with no recorded outcome may have moved money: that must be reconciled before anything else.
+    open_attempts = con.execute(
+        "SELECT COUNT(*) FROM payment_attempts a JOIN payments p ON p.payment_id=a.payment_id JOIN items i ON i.item_id=p.item_id "
+        "WHERE i.run_id=? AND a.step != 'NONE' AND a.outcome IN ('PENDING','UNKNOWN')", (run_id,)).fetchone()[0]
+    if open_attempts:
+        raise NotImplementedError("open payment attempts must be reconciled with the provider first (payments.reconcile, task A8)")
 
 def storage_paths(root: Path) -> dict[str, str]:
     """Storage paths are runtime config and cannot be overridden per client, so they are readable before the client is known."""
@@ -159,3 +167,9 @@ def open_existing_db(root: Path):
     if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is None:
         raise CliError("the database has no runs yet: run a request first")
     return con
+
+
+def runtime_setting(root: Path, section: str, key: str, default):
+    """A runtime setting (client policy cannot change these) read before the client is known, e.g. approvals.lock_wait_s."""
+    import yaml
+    return ((yaml.safe_load((root / "config.yaml").read_text()) or {}).get(section) or {}).get(key, default)

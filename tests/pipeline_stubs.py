@@ -13,7 +13,7 @@ from paypilot.core.db import connect
 from paypilot.io import batch
 from paypilot.io.request import load_request
 from paypilot.resolve import normalize
-from paypilot.schemas import (BankLine, CheckResult, CheckStatus, ClientData, DateBasis, Decision, ExceptionDraft, Facts,
+from paypilot.schemas import (BankLine, CheckResult, CheckStatus, ClientData, DateBasis, Decision, ExceptionDraft, Facts, Invoice,
                               Proposal, Reason, Resolution, Severity, Source, Vendor)
 from tests.fakes import FakeExtClient, FakeHistory, fixed_clock
 
@@ -43,19 +43,29 @@ def checks_stub(item, res, ctx):
 
 def decide_stub(item, res, checks, policy):
     flags: list[str] = []
+    overridable: list[str] = []
+    inv_no = (getattr(item, "invoice_no_raw", "") or "").upper()
     if res.vendor_id is None:
         proposal, flags = Proposal.CANNOT_VERIFY, ["PAYEE_UNRESOLVED"]
     elif "DUP" in (getattr(item, "descriptor_raw", "") or "").upper():
         proposal, flags = Proposal.HELD, ["DUPLICATE_TRANSACTION"]
     elif isinstance(item, BankLine):
         proposal = Proposal.POSTED
+    elif "DUPINV" in inv_no:                                   # never overridable
+        proposal, flags = Proposal.HELD, ["DUPLICATE_INVOICE"]
+    elif "PO" in inv_no:                                       # overridable with a reason
+        proposal, flags, overridable = Proposal.HELD, ["PO_AMOUNT_MISMATCH"], ["PO_AMOUNT_MISMATCH"]
+    elif "BOTH" in inv_no:                                     # one overridable + one never
+        proposal, flags, overridable = Proposal.HELD, ["DUPLICATE_INVOICE", "PO_AMOUNT_MISMATCH"], ["PO_AMOUNT_MISMATCH"]
     else:
         proposal = Proposal.AWAITING_APPROVAL
     facts = Facts(operation="POST_BANK_LINES" if isinstance(item, BankLine) else "PAY_INVOICES", kind=type(item).__name__,
                   vendor_id=res.vendor_id, amount_paise=getattr(item, "amount_paise", None), currency=getattr(item, "currency", None),
-                  account="Staff meals" if res.vendor_id else None, flags=sorted(flags))
+                  account=("Staff meals" if res.vendor_id == "V1" else "Freight - carriers") if res.vendor_id else None,
+                  invoice_no_canonical=getattr(item, "invoice_no_canonical", None), flags=sorted(flags))
     return Decision(item_id=item.item_id, proposal=proposal, flags=flags, reasons=[Reason(code=f, text=f) for f in flags],
-                    facts=facts, account=facts.account, payee_legal_name=res.legal_name,
+                    facts=facts, account=facts.account, payee_legal_name=res.legal_name, overridable=overridable,
+                    bank_status={"ifsc_valid": "PASS", "account_matches_master": "PASS", "ownership_verified": "NOT_VERIFIED"} if isinstance(item, Invoice) else None,
                     decision_hash=ids.decision_hash(facts, policy.decision_hash_input))
 
 
@@ -116,6 +126,20 @@ def write_scenario(dirpath: Path) -> Path:
         row("BL-1", "2026-10-03", "RAZ*SWIGGY BLR", "1240.00"), row("BL-2", "2026-10-04", "PAYTM*MYSTERY", "99.00"),
         row("BL-3", "2026-10-05", "SWIGGY DUP", "1240.00"), row("BL-4", "2026-10-06", "SWIGGY", 12.5),
         row("BL-5", "2026-10-07", "SWIGGY BLR", "500.00")]))
+    return dirpath
+
+
+def write_invoice_scenario(dirpath: Path) -> Path:
+    """PAY_INVOICES: two awaiting approval (Delhivery), one overridable hold, one never-overridable hold, one mixed, one unresolved."""
+    dirpath.mkdir(parents=True, exist_ok=True)
+    (dirpath / "request.json").write_text(json.dumps({"schema_version": "1.0", "request_id": "inv1", "client_id": "northbay",
+                                                      "operation": "PAY_INVOICES", "inputs": {"invoices": "invoices.json"}}))
+    inv = lambda i, vendor, no, amt, acct="000000000003": {"invoice_id": i, "vendor_name": vendor, "invoice_number": no, "invoice_date": "2026-11-03",
+                                                           "amount_inr": amt, "remit_bank_account": acct}
+    (dirpath / "invoices.json").write_text(json.dumps([
+        inv("INV-1", "Delhivery Limited", "DLV/2026-27/00418", "48000.00"), inv("INV-2", "Swiggy Limited", "PO-1", "64800.00", "000000000001"),
+        inv("INV-3", "Swiggy Limited", "DUPINV-9", "100.00", "000000000001"), inv("INV-4", "Delhivery Limited", "DLV/2026-27/00431", "12000.00"),
+        inv("INV-5", "Nobody Known Ltd", "X-1", "5.00"), inv("INV-6", "Swiggy Limited", "BOTH-1", "7.00", "000000000001")]))
     return dirpath
 
 
