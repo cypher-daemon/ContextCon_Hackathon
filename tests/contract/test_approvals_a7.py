@@ -346,3 +346,24 @@ def test_contract_entry_point_approve_returns_the_approval(world):
     with pytest.raises(ApprovalRefused) as e:
         approve(item(con, "INV-3")["item_id"], FC, "x", ["DUPLICATE_INVOICE"])
     assert e.value.code == "NEVER_OVERRIDABLE"
+
+
+def test_contract_entry_point_also_reconciles_first_and_validates_the_provider(world, monkeypatch):
+    """Review finding: approvals.service.approve() used to skip the reconcile-first gate and the provider check the CLI did."""
+    from paypilot.approvals.service import approve
+    from paypilot.cli.runtime import CliError
+    assert cli("approve", "INV-1", "--by", FC).exit_code == 0
+    con = db(world)
+    con.execute("update payment_attempts set step='CONFIRM_SENT', outcome='PENDING'")                       # sent; outcome unknown
+    n = counts(con)
+    with pytest.raises(NotImplementedError, match="reconciled"):
+        approve(item(con, "INV-4")["item_id"], FC, None, [])                                              # not just the CLI: every entry point
+    assert counts(con) == n and item(con, "INV-4")["state"] == "AWAITING_APPROVAL"
+    con.execute("update payment_attempts set step='NONE', outcome='PENDING'")
+    cfg = yaml.safe_load((world / "config.yaml").read_text()); cfg["payments"]["provider"] = "razorpayx_test"
+    (world / "config.yaml").write_text(yaml.safe_dump(cfg))
+    for k in ("RAZORPAYX_KEY_ID", "RAZORPAYX_KEY_SECRET", "RAZORPAYX_ACCOUNT_NUMBER"):
+        monkeypatch.delenv(k, raising=False)
+    with pytest.raises(CliError):
+        approve(item(con, "INV-4")["item_id"], FC, None, [])                                              # test keys required, never silently fake
+    assert counts(con) == n

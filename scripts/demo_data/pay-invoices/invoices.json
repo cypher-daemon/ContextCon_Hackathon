@@ -1,0 +1,14 @@
+[
+  {"invoice_id": "INV-201", "vendor_name": "Delhivery Limited", "vendor_gstin": null, "vendor_domain": "delhivery.com",
+   "invoice_number": "DLV/2026-27/00418", "invoice_date": "2026-11-03", "due_date": "2026-11-30",
+   "amount_inr": "48000.00", "currency": "INR", "po_number": "PO-NB-1042", "qty": 12,
+   "remit_bank_account": "000000000003", "remit_ifsc": "‹IFSC-B›", "document_ref": null},
+  {"invoice_id": "INV-202", "vendor_name": "Delhivery Limited", "vendor_gstin": null, "vendor_domain": "delhivery.com",
+   "invoice_number": "DLV-2026-27-00418", "invoice_date": "2026-11-05", "due_date": "2026-11-30",
+   "amount_inr": "48000.00", "currency": "INR", "po_number": "PO-NB-1042", "qty": 12,
+   "remit_bank_account": "000000000003", "remit_ifsc": "‹IFSC-B›", "document_ref": null},
+  {"invoice_id": "INV-203", "vendor_name": "VRL Logistics Limited", "vendor_gstin": null, "vendor_domain": "vrlgroup.in",
+   "invoice_number": "VRL/7731", "invoice_date": "2026-11-07", "due_date": "2026-11-30",
+   "amount_inr": "60000.00", "currency": "INR", "po_number": "PO-NB-1043", "qty": 10,
+   "remit_bank_account": "000000000005", "remit_ifsc": "‹IFSC-C›", "document_ref": null}
+]

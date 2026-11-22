@@ -13,7 +13,7 @@ from typing import Iterator
 from paypilot.core import crash
 from paypilot.core.config import ConfigError, load_config, with_data_hash
 from paypilot.core.db import PersistenceFailure
-from paypilot.ledger.store import SqliteLedger
+from paypilot.core.recovery import begin_recovery as _begin_recovery
 from paypilot.core.env import load_dotenv
 from paypilot.core.lock import LockHeld
 from paypilot.io.client_data import ClientDataError, load_client_data
@@ -131,22 +131,13 @@ def check_provider(name: str | None, cfg: RunConfig) -> str:
             raise CliError("razorpayx_test needs RAZORPAYX_KEY_ID starting with rzp_test_ (live keys are refused)")
         if not os.environ.get("RAZORPAYX_KEY_SECRET") or not os.environ.get("RAZORPAYX_ACCOUNT_NUMBER"):
             raise CliError("razorpayx_test needs RAZORPAYX_KEY_SECRET and RAZORPAYX_ACCOUNT_NUMBER in .env")
-        raise CliError("the razorpayx_test adapter is not built yet (task A9); use --provider fake")
     return provider
 
 
-def begin_recovery(con: sqlite3.Connection, run_id: str) -> None:
-    """Resume protocol steps 3-4 (FAILURE_MODES §3). RESERVED ledger rows -> UNCONFIRMED (they still count against the budget).
-    Open payments are reconciled with the provider BEFORE any new work; payments land in A8, so until then any existing
-    payment row fails loudly instead of being ignored."""
-    SqliteLedger(con, utcnow).mark_unconfirmed(run_id)
-    # A payment still CREATED (step NONE) has made no provider call, so there is nothing to reconcile. An attempt that was sent
-    # (step beyond NONE) with no recorded outcome may have moved money: that must be reconciled before anything else.
-    open_attempts = con.execute(
-        "SELECT COUNT(*) FROM payment_attempts a JOIN payments p ON p.payment_id=a.payment_id JOIN items i ON i.item_id=p.item_id "
-        "WHERE i.run_id=? AND a.step != 'NONE' AND a.outcome IN ('PENDING','UNKNOWN')", (run_id,)).fetchone()[0]
-    if open_attempts:
-        raise NotImplementedError("open payment attempts must be reconciled with the provider first (payments.reconcile, task A8)")
+def begin_recovery(con: sqlite3.Connection, run_id: str, cfg: RunConfig, session_id: str = "recovery") -> None:
+    """Reconcile-first gate for run/resume (the approval service calls the same core function itself)."""
+    _begin_recovery(con, run_id, utcnow, cfg, session_id)
+
 
 def storage_paths(root: Path) -> dict[str, str]:
     """Storage paths are runtime config and cannot be overridden per client, so they are readable before the client is known."""

@@ -29,6 +29,14 @@ def _policy():
     return load_config("northbay")[1]
 
 
+def _payment_for_classification():
+    now = datetime(2026, 10, 7, tzinfo=timezone.utc)
+    return Payment(payment_id="PAY-1", item_id="BL-003", approval_id="APP-1", payment_key="key",
+                   provider="fake", amount_paise=1_850_000, currency="INR",
+                   status=PaymentStatus.PROVIDER_CONFIRMED, settlement_status=SettlementStatus.PENDING,
+                   created_at=now, updated_at=now)
+
+
 def test_duplicate_transaction_produces_high_blocking_draft_with_evidence():
     result = classify(_item(), _decision(), None, None, _policy())
 
@@ -60,6 +68,23 @@ def test_payment_reconciliation_uses_post_severity_and_opens_recovery_case():
     assert result[0].severity == Severity.CRITICAL
     assert result[0].open_recovery_case is True
     assert "PAY-1" in result[0].related_refs
+
+
+def test_duplicate_debit_reconciliation_is_critical_and_opens_recovery():
+    from paypilot.schemas import ReconciliationResult
+
+    recon = ReconciliationResult(subject_ref="PAY-1", status="CONFLICT", provider_ref="pout-1",
+                                 statement_refs=["statement.json#ST-1", "statement.json#ST-2"],
+                                 flags=["DUPLICATE_DEBIT"], differences={"duplicate_debit_refs": ["ST-1", "ST-2"]})
+
+    drafts = classify(None, None, recon, _payment_for_classification(), _policy())
+
+    assert len(drafts) == 1
+    assert (drafts[0].type, drafts[0].severity, drafts[0].blocking) == (
+        "DUPLICATE_DEBIT", Severity.CRITICAL, True
+    )
+    assert drafts[0].open_recovery_case is True
+    assert drafts[0].related_refs == ["PAY-1", "pout-1", "statement.json#ST-1", "statement.json#ST-2"]
 
 
 def test_persistence_failure_is_never_persisted_as_exception():

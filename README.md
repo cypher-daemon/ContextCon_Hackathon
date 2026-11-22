@@ -2,12 +2,17 @@
 
 **PayPilot is a CLI concept and prototype for accounts-payable work at mid-size Indian logistics companies.** It is designed to take a finance request and its batch of bank lines or invoices through vendor matching, controls, a human approval point, payment handling, reconciliation and an audit-ready result. Its governing rule is simple: never guess who a payee is, and never repeat a payment when the outcome is uncertain.
 
+<<<<<<< HEAD
 > **Submission status:** this repository contains a substantial implementation of ingestion, vendor-master resolution, deterministic checks and decisions, exception classification, journal posting, output generation and source adapters. It is not yet a complete runnable end-to-end service. The payment executor and payment reconciliation adapters are still stubs; the RazorpayX adapter, full audit verifier, scenario integration suite and crash suite are not present. On Windows, the current runtime also fails to import its `fcntl`-based process lock. See [Technical Notes](TECHNICAL.md) for exact implementation boundaries and blockers.
+=======
+> **Status: working build (hackathon).** Bookkeeping, payment safety (crash recovery, reconcile-first, reversal after success), RECONCILE against a bank statement, exceptions with the full lifecycle, and `audit verify` run end to end on the FakeProvider. The RazorpayX test-mode adapter is written and has been shown to create and poll a real test payout, but the crash drill and terminal states are not yet verified against it. Automated tests for the new code are still to be written (some older contract tests assume the stub executor).
+>>>>>>> 7de5a9e3a36a307697633c1d1e3902c3e217ffbc
 
 ## The service and its buyer
 
 Today, an AP clerk or outsourced AP provider receives invoices and bank activity, identifies vendors, checks invoices against records and purchase orders, catches duplicate transactions and bank-detail changes, obtains approval, pays suppliers, reconciles statements and explains exceptions. PayPilot is intended to automate the repeatable data and control steps for the **finance controller or head of AP at a mid-size Indian third-party logistics (3PL) company**. A second target buyer is an outsourced AP/BPO firm serving multiple 3PL clients.
 
+<<<<<<< HEAD
 The demo client, **NorthBay Logistics Pvt Ltd**, is fictional. Its supplier and carrier names represent real companies, but the client’s vendor records, purchase orders and bank account numbers are demo fixtures. All fixture bank account numbers are fictional. Company identifiers are used only when the project has supporting evidence.
 
 ## Input and finished result
@@ -50,11 +55,40 @@ flowchart LR
   PAY --> DB
   REC --> DB
   DB --> OUT[Reports, audit and cost ledger]
+=======
+## See it work in 2 minutes
+```bash
+python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+cp .env.example .env            # set BANK_HMAC_KEY to a random value (demo.sh falls back to a throwaway key)
+bash scripts/demo.sh            # DEMO_PAUSE=1 waits for Enter between scenes
+```
+The demo runs eight scenes on the FakeProvider (no real money, nothing under `clients/` is modified): month-end posting; invoices with a duplicate held; refused approvals (never-overridable flag, non-approver); one approval → one payment, a second approve is a no-op; a `kill -9` mid-payment that `resume` reconciles with the same key; a bank return *after* confirmed success (payment RETURNED, item back to HELD, REVERSAL entry, CRITICAL exception + recovery case, vendor contained); a bank-statement reconcile (matched, duplicate debit, returned payment, unknown debit); and `audit verify` replaying the books. Outputs land in `.demo/out/<run_id>/`.
+
+Fault injection for your own drills: `PAYPILOT_CRASH_AT=<point>` kills the process at a named point (see `paypilot/core/crash.py`); `PAYPILOT_FAKE_FAULT=TIMEOUT_AFTER_CREATE|TIMEOUT_BEFORE_CREATE|DECLINE|PROCESSING|RETURNED_AFTER_SUCCESS|UNKNOWN_STATUS` makes the FakeProvider misbehave; `python -m paypilot fake-provider set REF STATUS` moves a payment by hand like the RazorpayX test Dashboard.
+
+## Quick start
+```bash
+pip install -e ".[dev]" && cp .env.example .env    # BANK_HMAC_KEY + CRUSTDATA_API_KEY (+ RAZORPAYX_* test keys for SC-13)
+python -m paypilot run --scenario scenarios/SC-01    # month-end bank posting
+python -m paypilot run --scenario scripts/demo_data/pay-invoices   # invoices → approval queue (needs real IFSC codes; see scripts/demo.sh)
+python -m paypilot approvals
+python -m paypilot approve INV-201 --by "Finance Controller"    # item_id or a unique invoice_id / line_id
+python -m paypilot resume                                             # after any crash
+python -m paypilot show BL-001       # decision → rule → flag → check → evidence → source
+python -m paypilot exceptions --open
+python -m paypilot audit verify      # replay the books line by line
+python -m paypilot ledger            # ₹ per item, measured
+>>>>>>> 7de5a9e3a36a307697633c1d1e3902c3e217ffbc
 ```
 
 Identity, check and policy code is kept separate from the runtime that owns file and database changes. Current source code uses the vendor master for resolution and can query IFSC during bank checks. Crustdata and website adapters are present, but **the current matcher does not yet call them**, so the required live identity decision is not currently integrated into an end-to-end run.
 
+<<<<<<< HEAD
 Key safeguards in the code and design:
+=======
+## Data sources called
+Client records (₹0) · **Crustdata** Company Identify by domain + Web Fetch (the live-data source; credits; self-published evidence is labelled) · Razorpay IFSC API (optional, free; bank/branch only, never ownership) · Vendor payouts through a `PaymentProvider` interface: **RazorpayX Payouts test mode** (`--provider razorpayx_test`; dummy balance, no real money, not bank settlement) and a durable FakeProvider (`fake`, our own simulation, used by every deterministic test). Live mode is not supported. The Razorpay IFSC API is a separate free lookup. **Status: the RazorpayX adapter (`payments/razorpayx_test.py`) is written but not yet verified against the live test API (TASKS H7); needs `RAZORPAYX_*` keys in `.env`.** No LLM. Not usable: the MCA registry (Cloudflare/login). Details and limitations: [`docs/BUSINESS.md`](docs/BUSINESS.md) §4.
+>>>>>>> 7de5a9e3a36a307697633c1d1e3902c3e217ffbc
 
 - Exact identifiers and vendor-master names/aliases are considered before fuzzy similarity. Ties and lookalikes are returned as non-resolving outcomes; fuzzy candidates are not an automatic identity confirmation.
 - Duplicate, period, purchase-order, account mapping and bank checks emit typed results. Decisions are deterministic rules, not an LLM.

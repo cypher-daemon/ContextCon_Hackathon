@@ -107,7 +107,7 @@ def _finish(con, ctx: StageContext, run_id: str) -> RunSummary:
 
 
 def _exit_for(summary: RunSummary) -> int:
-    return rt.EXIT_LIMIT if summary.status.value.startswith("STOPPED") else rt.EXIT_OK
+    return rt.EXIT_LIMIT if (summary.status.value.startswith("STOPPED") or summary.status.value == "PARTIAL") else rt.EXIT_OK
 
 
 # ---------------- commands ----------------
@@ -138,7 +138,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
             sid = pipeline.open_session(con, run_id, "run", rt.utcnow())
             code = rt.EXIT_FAILED         # stays 1 if anything below raises; a crash must not be recorded as a clean exit
             try:
-                rt.begin_recovery(con, run_id)
+                rt.begin_recovery(con, run_id, loaded.cfg, sid)
                 ctx = dataclasses.replace(ctx0, run_id=run_id, session_id=sid)
                 summary = _finish(con, ctx, run_id)
                 code = _exit_for(summary)
@@ -168,7 +168,7 @@ def resume(run_id: Optional[str] = _RUN_OPT) -> None:
             sid = pipeline.open_session(con, run_id, "resume", rt.utcnow())
             code = rt.EXIT_FAILED
             try:
-                rt.begin_recovery(con, run_id)
+                rt.begin_recovery(con, run_id, loaded.cfg, sid)
                 summary = _finish(con, _ctx(loaded, run_id, sid, run["client_id"], operation, period), run_id)
                 code = _exit_for(summary)
             finally:
@@ -345,7 +345,6 @@ def approve(item: str = typer.Argument(..., help="Exact item_id, or a unique inv
             provider_name = rt.check_provider(provider, loaded.cfg)
             sid = _now_session(con, run_id, "approve")
             try:
-                rt.begin_recovery(con, run_id)                                 # reconcile first
                 result = approve_item(con, item_id=row["item_id"], reviewer=by, reason=reason, overrides=list(override or []), cfg=loaded.cfg,
                                       policy=loaded.policy, history=SqliteHistory(con, loaded.data, client_id, run_id),
                                       provider_name=provider_name, session_id=sid, now=rt.utcnow())

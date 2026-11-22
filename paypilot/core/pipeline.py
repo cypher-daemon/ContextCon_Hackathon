@@ -28,9 +28,9 @@ from paypilot.exceptions.classify import classify
 from paypilot.ledger.budget import effective_cost_limit
 from paypilot.ledger.store import summarize
 from paypilot.resolve.matcher import resolve_vendor
-from paypilot.schemas import (BankLine, CheckResult, Decision, ExceptionDraft, Facts, Invoice, ItemState as S,
+from paypilot.schemas import (Operation, BankLine, CheckResult, Decision, ExceptionDraft, Facts, Invoice, ItemState as S,
                               ParseFailure, Proposal, Reason, Request, Resolution, RunConfig, RunStatus,
-                              RunSummary, VendorMessage)
+                              RunSummary, Severity, VendorMessage)
 
 ACTOR = "system"
 _MODELS = {"BankLine": BankLine, "Invoice": Invoice, "VendorMessage": VendorMessage, "ParseFailure": ParseFailure}
@@ -172,6 +172,9 @@ def _advance_one(con: sqlite3.Connection, ctx: StageContext, item_id: str) -> bo
                                   drafts=drafts, now=now)
         else:
             transition(con, expected_state=S.NEW, expected_version=ver, new_state=S.PARSED, **common)
+    elif state is S.PARSED and ctx.operation is Operation.RECONCILE and isinstance(item, BankLine):
+        from paypilot.core.reconcile_op import reconcile_line        # A12: a statement line is reconciled, not posted or paid
+        reconcile_line(con, ctx, row, item)
     elif state is S.PARSED:
         res = resolve_vendor(item, ctx)
         transition(con, expected_state=S.PARSED, expected_version=ver, new_state=S.RESOLVED,
@@ -240,21 +243,80 @@ def build_summary(con: sqlite3.Connection, run_id: str, ctx: StageContext) -> Ru
                       recovered_from_crash=crashed, elapsed_ms=max(elapsed, 0), cost=cost)
 
 
+# ---------------- staleness (A13) ----------------
+def refresh_stale(con: sqlite3.Connection, ctx: StageContext, run_id: str) -> int:
+    """Client data or policy changed since a decision was made (FAILURE_MODES #41): every non-final, not-yet-paid item whose stored
+    decision no longer hashes to the same value goes STALE -> PARSED and is re-decided from the top. PAID / POSTED / payments in
+    flight are untouched. An approval is bound to the old decision_hash, so it cannot be used for the new decision."""
+    n = 0
+    for r in con.execute("SELECT * FROM items WHERE run_id=? AND state IN ('AWAITING_APPROVAL','HELD') AND decision_json IS NOT NULL", (run_id,)).fetchall():
+        if con.execute("SELECT 1 FROM payments WHERE item_id=?", (r["item_id"],)).fetchone():
+            continue
+        d = Decision.model_validate_json(r["decision_json"])
+        if ids.decision_hash(d.facts, ctx.policy.decision_hash_input) == r["decision_hash"]:
+            continue
+        now = ctx.clock()
+        with tx(con):
+            transition(con, item_id=r["item_id"], run_id=run_id, session_id=ctx.session_id, expected_state=S(r["state"]),
+                       expected_version=r["version"], new_state=S.STALE, actor=ACTOR, ts=now,
+                       reason="STALE_APPROVAL: client data or policy changed since the decision",
+                       metadata={"old_decision_hash": r["decision_hash"]})
+            transition(con, item_id=r["item_id"], run_id=run_id, session_id=ctx.session_id, expected_state=S.STALE,
+                       expected_version=r["version"] + 1, new_state=S.PARSED, actor=ACTOR, ts=now, reason="re-deciding from the top",
+                       set_columns={"decision_json": None, "decision_hash": None, "checks_json": None, "resolution_json": None})
+            con.execute("UPDATE approvals SET status='SUPERSEDED' WHERE item_id=? AND decision_hash=? AND status='PENDING'",
+                        (r["item_id"], r["decision_hash"]))
+            upsert_exceptions(con, run_id=run_id, session_id=ctx.session_id, item_id=r["item_id"], vendor_id=r["vendor_id"], now=now, drafts=[
+                ExceptionDraft(type="STALE_APPROVAL", severity=Severity.HIGH, blocking=False,
+                               summary="Client data or policy changed: the earlier decision was discarded and re-made",
+                               details=f"old decision_hash {r['decision_hash']}", recommended_action="Review the new decision and approve again",
+                               origin_key=r["decision_hash"], item_id=r["item_id"])])
+        n += 1
+    return n
+
+
 # ---------------- drive ----------------
 def drive(run_id: str, ctx: StageContext, provider: PaymentProvider) -> RunSummary:
     """Advance every item of the run as far as the pipeline goes (to POSTED / AWAITING_APPROVAL / HELD / CANNOT_VERIFY).
-    `provider` is unused here: payments start at approval (A7/A8)."""
+    `provider` is unused here: payments start at approval and are reconciled first by core.recovery (A7/A8).
+    Limits: a time stop leaves the run PARTIAL, a cost stop STOPPED_COST; `resume` continues either (A13)."""
+    from paypilot.context import TimeExceeded
+    from paypilot.ledger.budget import Budget, request_limits
+    from paypilot.schemas import Limits  # noqa: F401
     con = connect(ctx.cfg.storage["db_path"])
+    status = RunStatus.COMPLETE
     try:
         ctx = dataclasses.replace(ctx, history=SqliteHistory(con, ctx.data, ctx.client_id, run_id))
+        budget = Budget(con, run_id, cfg_limits=ctx.cfg.limits, request_limits=request_limits(con, run_id),
+                        unknown_reserve_inr=float(ctx.cfg.costs.get("unknown_reserve_inr", 1.0)))
         if ctx.operation is not None:     # missing/unsupported operation: run-level CANNOT_VERIFY result, built in A13
-            for r in con.execute("SELECT item_id FROM items WHERE run_id=? ORDER BY COALESCE(item_date,''), input_name, row_no",
-                                 (run_id,)).fetchall():
-                while _advance_one(con, ctx, r["item_id"]):
-                    pass
+            refresh_stale(con, ctx, run_id)
+            try:
+                for r in con.execute("SELECT item_id FROM items WHERE run_id=? ORDER BY COALESCE(item_date,''), input_name, row_no",
+                                     (run_id,)).fetchall():
+                    budget.check_time()
+                    while _advance_one(con, ctx, r["item_id"]):
+                        pass
+            except TimeExceeded:
+                status = RunStatus.PARTIAL
+        elif con.execute("SELECT 1 FROM exceptions WHERE run_id=? AND type='INPUT_UNSUPPORTED'", (run_id,)).fetchone() is None:
+            now = ctx.clock()                  # run-level CANNOT_VERIFY (UNSUPPORTED_REQUEST): never a crash, never a guess
+            with tx(con):
+                eid = ids.exception_id(None, None, "INPUT_UNSUPPORTED", run_id)
+                con.execute("INSERT OR IGNORE INTO exceptions(exception_id,run_id,item_id,payment_id,vendor_id,type,severity,status,blocking,"
+                            "summary,details,recommended_action,evidence_refs_json,related_refs_json,origin_key,created_at,updated_at) "
+                            "VALUES (?,?,NULL,NULL,NULL,?,?,?,0,?,?,?,'[]','[]',?,?,?)",
+                            (eid, run_id, "INPUT_UNSUPPORTED", "LOW", "CLASSIFIED", "CANNOT_VERIFY: UNSUPPORTED_REQUEST",
+                             "The request has no supported operation (POST_BANK_LINES | PAY_INVOICES | RECONCILE); nothing was processed.",
+                             "Re-submit with an explicit operation", run_id, now.isoformat(), now.isoformat()))
+                append_event(con, run_id=run_id, session_id=ctx.session_id, entity_type="run", entity_id=run_id, previous_state=None,
+                             new_state="CANNOT_VERIFY", actor=ACTOR, ts=now, reason="UNSUPPORTED_REQUEST",
+                             metadata={"flags": ["UNSUPPORTED_REQUEST"], "missing": ["supported operation"]})
+        if status is RunStatus.COMPLETE and con.execute(
+                "SELECT 1 FROM items WHERE run_id=? AND decision_json LIKE '%\"COST_LIMIT\"%' LIMIT 1", (run_id,)).fetchone():
+            status = RunStatus.STOPPED_COST
         with tx(con):
-            con.execute("UPDATE runs SET status=?, updated_at=? WHERE run_id=?",
-                        (RunStatus.COMPLETE.value, ctx.clock().isoformat(), run_id))
+            con.execute("UPDATE runs SET status=?, updated_at=? WHERE run_id=?", (status.value, ctx.clock().isoformat(), run_id))
         return build_summary(con, run_id, ctx)
     finally:
         con.close()

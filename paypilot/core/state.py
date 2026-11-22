@@ -15,21 +15,21 @@ from paypilot.schemas import ItemState as S, Outcome
 
 ALLOWED: dict[S, frozenset[S]] = {
     S.NEW: frozenset({S.PARSED, S.CANNOT_VERIFY, S.STALE}),           # NEW -> CANNOT_VERIFY: ParseFailure
-    S.PARSED: frozenset({S.RESOLVED, S.CANNOT_VERIFY, S.STALE}),
+    S.PARSED: frozenset({S.RESOLVED, S.CANNOT_VERIFY, S.RECONCILED, S.STALE}),   # ->RECONCILED: a statement line in a RECONCILE run
     S.RESOLVED: frozenset({S.CHECKED, S.STALE}),
     S.CHECKED: frozenset({S.DECIDED, S.STALE}),
     S.DECIDED: frozenset({S.POSTED, S.AWAITING_APPROVAL, S.HELD, S.CANNOT_VERIFY, S.STALE}),
     S.AWAITING_APPROVAL: frozenset({S.APPROVED, S.REJECTED, S.HELD, S.STALE}),   # ->HELD: vendor contained at enqueue
     S.HELD: frozenset({S.APPROVED, S.REJECTED, S.STALE}),                        # ->APPROVED: overridable flags only + reason
-    S.APPROVED: frozenset({S.PAYMENT_IN_PROGRESS}),
+    S.APPROVED: frozenset({S.PAYMENT_IN_PROGRESS, S.HELD}),                      # ->HELD: bank account changed before execution (refused, no provider call)
     S.PAYMENT_IN_PROGRESS: frozenset({S.PAID, S.PAYMENT_UNCERTAIN, S.FAILED}),
     S.PAYMENT_UNCERTAIN: frozenset({S.PAID, S.FAILED}),                          # reconcile evidence only
     S.FAILED: frozenset({S.HELD}),                                               # fresh checks + new approval before retry
     S.PAID: frozenset({S.HELD}),                                                 # ONLY a reversal after success; never paid again
     S.STALE: frozenset({S.PARSED}),                                              # re-decided from the top
-    S.POSTED: frozenset(), S.REJECTED: frozenset(), S.CANNOT_VERIFY: frozenset(),
+    S.POSTED: frozenset(), S.REJECTED: frozenset(), S.CANNOT_VERIFY: frozenset(), S.RECONCILED: frozenset(),
 }
-FINAL = frozenset({S.POSTED, S.REJECTED, S.CANNOT_VERIFY})                       # never re-run (PAID's one exit is the reversal)
+FINAL = frozenset({S.POSTED, S.REJECTED, S.CANNOT_VERIFY, S.RECONCILED})                       # never re-run (PAID's one exit is the reversal)
 _STATE_OUTCOME = {s: Outcome(s.value) for s in S if s.value in Outcome._value2member_map_}
 # columns a transition may set alongside the state (whitelist: keys are interpolated into SQL)
 UPDATABLE = frozenset({"payload_json", "parse_errors_json", "transaction_fingerprint", "invoice_no_canonical", "descriptor_key",

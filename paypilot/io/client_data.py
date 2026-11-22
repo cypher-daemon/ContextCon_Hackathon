@@ -137,3 +137,14 @@ def load_client_data(client_id: str, cfg: RunConfig) -> tuple[ClientData, str]:
     data = ClientData(client_id=client_id, vendors=vendors, pos=pos, history=history, accounts=accounts,
                       statement=None, data_quality=_scan(vendors))
     return data, h.hexdigest()
+
+
+def read_raw_bank(client_id: str, vendor_id: str) -> tuple[str | None, str | None, str | None]:
+    """(raw account, ifsc, legal_name) of a vendor-master row, read at payout time ONLY (INTERFACES §8). The caller keeps the
+    raw number in memory, checks its HMAC against the approved fingerprint, and never logs, stores or hashes it."""
+    path = _root() / "clients" / client_id / "vendor_master.csv"
+    rows, _ = _rows(path, VENDOR_COLS, True)
+    for r in rows:
+        if r["vendor_id"] == vendor_id:
+            return _opt(r["bank_account"]), _opt(r["ifsc"].upper()), r["legal_name"]
+    return None, None, None

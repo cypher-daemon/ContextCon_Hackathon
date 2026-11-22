@@ -69,6 +69,26 @@ def test_duplicate_statement_debits_flag_conflict():
     assert result.differences["duplicate_debit_refs"] == ["statement.json#ST-1", "statement.json#ST-2"]
 
 
+def test_referenced_statement_credit_is_a_reversal_conflict():
+    credit = _line(direction="CREDIT")
+
+    result = three_way(_decision(), _payment(), _provider(), [credit], None, _policy())
+
+    assert result.status == SettlementStatus.CONFLICT
+    assert result.flags == ["REVERSED_PAYMENT"]
+    assert result.differences["credit_refs"] == ["statement.json#ST-1"]
+
+
+def test_referenced_statement_with_wrong_currency_is_not_matched():
+    wrong_currency = _line(currency="USD")
+
+    result = three_way(_decision(), _payment(), _provider(), [wrong_currency], None, _policy())
+
+    assert result.status == SettlementStatus.CONFLICT
+    assert result.flags == ["SETTLEMENT_MISMATCH"]
+    assert result.differences["statement_currency"] == {"expected": "INR", "actual": "USD"}
+
+
 def test_provider_wrong_payee_and_amount_are_both_reported():
     provider = _provider(amount_paise=4_700_000, metadata={"vendor_id": "V-0005"})
 

@@ -26,6 +26,7 @@ from paypilot.core.audit import append_event
 from paypilot.core.crash import crash_point
 from paypilot.core.db import tx
 from paypilot.core.pipeline import upsert_exceptions
+from paypilot.core.recovery import begin_recovery
 from paypilot.core.state import transition
 from paypilot.flags import NEVER_OVERRIDABLE
 from paypilot.schemas import Approval, Decision, ExceptionDraft, Invoice, ItemState as S, RunConfig, Severity
@@ -102,6 +103,11 @@ def approve_item(con: sqlite3.Connection, *, item_id: str, reviewer: str, reason
     overrides = sorted({o.strip() for o in overrides if o and o.strip()})
     contained: list[str] | None = None
     result: ApprovalResult | None = None
+    # Reconcile first (every entry point, not just the CLI): an attempt that may have reached the provider blocks new approvals.
+    run = con.execute("SELECT run_id FROM items WHERE item_id=?", (item_id,)).fetchone()
+    if run is None:
+        raise ApprovalRefused("UNKNOWN_ITEM", f"no item {item_id}")
+    begin_recovery(con, run["run_id"], lambda: now, cfg, session_id)
     with tx(con):
         row = con.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
         if row is None:
@@ -264,6 +270,10 @@ def approval_queue(con: sqlite3.Connection, run_id: str) -> tuple[list[dict], in
         if r["state"] == "HELD" and (never or any(f not in set(d.overridable) for f in d.flags)) and d.flags:
             blocked += 1
             continue
+        pay = con.execute("SELECT status FROM payments WHERE item_id=?", (r["item_id"],)).fetchone()
+        if pay is not None and pay["status"] != "FAILED":          # returned / reversed / uncertain: never offered for approval again
+            blocked += 1
+            continue
         payload = json.loads(r["payload_json"] or "{}")
         exc = con.execute("SELECT COUNT(*) FROM exceptions WHERE (item_id=? OR (vendor_id IS NOT NULL AND vendor_id=?)) AND status NOT IN "
                           "('RESOLVED','FALSE_POSITIVE','ACCEPTED_RISK','CLOSED_NO_ACTION')", (r["item_id"], r["vendor_id"])).fetchone()[0]
@@ -293,9 +303,10 @@ def approve(item_id: str, reviewer: str, reason: str | None, overrides: list[str
         if row is None:
             raise ApprovalRefused("UNKNOWN_ITEM", f"no item {item_id}")
         loaded = rt.load_all(row["client_id"], root)
+        provider_name = rt.check_provider(None, loaded.cfg)                          # same provider validation as the CLI
         with RunLock(paths["lock_path"], wait_s=float(loaded.cfg.approvals.get("lock_wait_s", 10))):
             return approve_item(con, item_id=item_id, reviewer=reviewer, reason=reason, overrides=overrides, cfg=loaded.cfg, policy=loaded.policy,
                                 history=SqliteHistory(con, loaded.data, row["client_id"], row["run_id"]),
-                                provider_name=loaded.cfg.payments.get("provider", "fake"), session_id="api", now=rt.utcnow()).approval
+                                provider_name=provider_name, session_id="api", now=rt.utcnow()).approval
     finally:
         con.close()

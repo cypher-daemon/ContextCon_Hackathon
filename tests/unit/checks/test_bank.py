@@ -61,6 +61,15 @@ def test_changed_account_and_invalid_ifsc_are_both_flagged():
     assert "IFSC" in result.details["mismatch_fields"]
 
 
+def test_changed_account_alone_is_blocked_without_echoing_account_values():
+    result = check_bank(_invoice(account_fingerprint="new-fingerprint", ifsc=None), _resolved(), _ctx())
+
+    assert result.flags == ["BANK_CHANGED"]
+    assert result.details["mismatch_fields"] == ["account fingerprint"]
+    assert "new-fingerprint" not in str(result.model_dump())
+    assert "master-fp" not in str(result.model_dump())
+
+
 def test_ifsc_source_failure_is_unknown_and_fails_closed():
     result = check_bank(_invoice(), _resolved(), _ctx(ext=FakeExtClient({"IFSC-B": FakeExtClient.err("TIMEOUT")})))
 
@@ -78,6 +87,14 @@ def test_vendor_message_requests_change_and_checks_containment():
     assert result.details["ifsc_valid"] == "PASS"
     assert result.details["containment_refs"] == ["EXC-1"]
     assert result.details["ownership_verified"] == "NOT_VERIFIED"
+
+
+def test_open_containment_blocks_a_new_invoice_even_when_bank_details_match():
+    result = check_bank(_invoice(), _resolved(),
+                        _ctx(history=FakeHistory(contained={"V-0003": ["EXC-2"]})))
+
+    assert result.flags == ["VENDOR_CONTAINED"]
+    assert result.details["containment_refs"] == ["EXC-2"]
 
 
 def test_disabled_ifsc_lookup_reports_not_checked():
