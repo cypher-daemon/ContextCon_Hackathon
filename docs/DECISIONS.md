@@ -38,9 +38,10 @@
 ## 3. Open questions (default stands until closed)
 | Question | Default | Owner |
 |---|---|---|
+| H1: Are the local secrets configured and does the Crustdata credits endpoint work? | Verified 2026-11-22: `.env` contains a non-placeholder `BANK_HMAC_KEY` (value not recorded); authenticated `GET https://api.crustdata.com/account/credits` returned HTTP 200 and `account.credits = 15156.6`. This API result is the balance in Crustdata credits; it does not validate the separately user-reported $2,800 wallet value. | Complete |
 | Do we have RazorpayX test-mode API access (test keys, test Customer Identifier, any KYC or IP-allowlist prerequisite for test mode)? | Unverified. Until H7 passes: FakeProvider only, and the README and video say the provider requirement is **not yet met** | H |
 | RazorpayX idempotency-key validity: claimed 7 days / 168 h, **UNVERIFIED** until the official source is checked and linked here. Search by `reference_id`: not documented, not used | Replay only within `idem_replay_window_h: 24` (one-day event); after that → PAYMENT_UNCERTAIN, reconciled by hand in the test Dashboard | H (add the link) / A |
-| ₹ per Crustdata credit? | `null` → shown as UNKNOWN | H (ask the Crustdata team) |
+| ₹ per Crustdata credit? | Still unknown. User reports a $2,800 credit balance and supplied a Crustdata pricing screenshot (2026-11-22): Search $9/1k records; autocomplete free; Person Enrich $0.30–$2.10/record; Company Enrich $0.60–$1.20/record; Agent Search $0.12–$1.32/typical search; Agent compute $0.0036/unit; Data search $0.15/1k units; Data enrich $0.015/record; business email $0.075/person; personal email $0.15/person; phone $0.15/person. These are product prices, not the required ₹ per API credit conversion, so config remains `null` and costs remain UNKNOWN until Crustdata confirms the conversion and the applicable endpoint billing. | H (confirm with Crustdata) |
 | Crustdata endpoint paths for identify / web fetch | B confirms them from docs.crustdata.com/llms.txt before B5 | B |
 | Real IFSC codes for the fixtures | B verifies live before committing | B |
 | Video length / format the organizers want | ~3 min MP4, 1080p | H |
