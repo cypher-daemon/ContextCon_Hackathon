@@ -25,9 +25,11 @@ from paypilot.core.history import SqliteHistory
 from paypilot.core.state import transition
 from paypilot.decide.engine import decide
 from paypilot.exceptions.classify import classify
+from paypilot.ledger.budget import effective_cost_limit
+from paypilot.ledger.store import summarize
 from paypilot.resolve.matcher import resolve_vendor
 from paypilot.schemas import (BankLine, CheckResult, Decision, ExceptionDraft, Facts, Invoice, ItemState as S,
-                              LedgerSummary, ParseFailure, Proposal, Reason, Request, Resolution, RunConfig, RunStatus,
+                              ParseFailure, Proposal, Reason, Request, Resolution, RunConfig, RunStatus,
                               RunSummary, VendorMessage)
 
 ACTOR = "system"
@@ -230,10 +232,8 @@ def build_summary(con: sqlite3.Connection, run_id: str, ctx: StageContext) -> Ru
     sessions = con.execute("SELECT COUNT(*) FROM sessions WHERE run_id=?", (run_id,)).fetchone()[0]
     crashed = con.execute("SELECT COUNT(*) FROM sessions WHERE run_id=? AND ended_at IS NULL AND session_id != ?",
                           (run_id, ctx.session_id)).fetchone()[0] > 0
-    n_items = sum(counts.values())
-    finished = n_items - sum(counts.get(s.value, 0) for s in _PIPELINE_STATES)
-    cost = LedgerSummary(run_id=run_id, total_inr=0.0, cost_status="KNOWN", items=n_items, finished_items=finished,
-                         limit_inr=float(ctx.cfg.limits.get("max_cost_inr") or 0.0))   # A6 replaces this with the real ledger
+    cost = summarize(con, run_id, limit_inr=effective_cost_limit(con, run_id, ctx.cfg.limits),
+                     unknown_reserve_inr=float(ctx.cfg.costs.get("unknown_reserve_inr", 1.0)))
     elapsed = int((ctx.clock() - datetime.fromisoformat(run["started_at"])).total_seconds() * 1000)
     return RunSummary(run_id=run_id, request_id=run["request_id"], client_id=run["client_id"], operation=ctx.operation,
                       status=RunStatus(run["status"]), counts=counts, open_exceptions=open_exc, sessions=sessions,

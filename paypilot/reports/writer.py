@@ -157,8 +157,11 @@ def _report_md(con: sqlite3.Connection, run_id: str, views: list[ItemView], summ
     open_exc = [e for v in views for e in v.exceptions if e["status"] not in CLOSED]
     oldest = min(open_exc, key=lambda e: (e["created_at"], e["exception_id"]), default=None)
     crashes = con.execute("SELECT COUNT(*) FROM sessions WHERE run_id=? AND ended_at IS NULL AND session_id != ?", (run_id, exclude_session)).fetchone()[0]
-    costs = [v.cost_inr for v in views]
-    cost_line = "UNKNOWN (a price is missing)" if any(c is None for c in costs) else f"₹{sum(costs):.2f} total, ₹{(sum(costs) / len(costs)) if costs else 0:.2f} per item"
+    c = summary.cost
+    cost_line = ("UNKNOWN (call prices missing)" if c.cost_status == "UNKNOWN" else
+                 f"₹{c.total_inr:.2f} total" + (" at least, some prices unknown" if c.cost_status == "PARTIAL" else "") +
+                 (f", ₹{c.inr_per_item:.2f} per item" if c.inr_per_item is not None else "") +
+                 (f"; ₹{c.unconfirmed_inr:.2f} unconfirmed" if c.unconfirmed_inr else ""))
     out = [f"# PayPilot run {run_id}", "",
            f"- Client: `{run['client_id']}` · request `{run['request_id']}` · operation `{run['operation'] or 'UNSUPPORTED'}` · status **{run['status']}**",
            f"- Items: {len(views)} · outcomes: " + (", ".join(f"{k} {n}" for k, n in sorted(summary.counts.items())) or "none"), "",
@@ -191,9 +194,12 @@ def write_run_outputs(con: sqlite3.Connection, run_id: str, cfg: RunConfig, *, n
         d["recovery_case"] = dict(rec) if rec else None
         exc_lines += json.dumps(d, ensure_ascii=False, default=str) + "\n"
     paths.append(atomic_write_text(out / "exceptions.jsonl", exc_lines))
-    ledger = [[r["provider"], r["operation"], r["status"], r["units"], "UNKNOWN" if r["actual_inr"] is None else r["actual_inr"],
-               r["duration_ms"]] for r in con.execute("SELECT * FROM cost_ledger WHERE run_id=? ORDER BY ts, call_key", (run_id,))]
-    paths.append(atomic_write_text(out / "ledger.csv", _csv(["provider", "operation", "status", "units", "inr", "duration_ms"], ledger)))
+    ledger = [[r["call_key"], r["item_id"] or "", r["stage"], r["provider"], r["operation"], r["status"], r["attempt"], r["units"],
+               "" if r["estimated_inr"] is None else r["estimated_inr"], "UNKNOWN" if r["actual_inr"] is None else r["actual_inr"],
+               r["http_status"] or "", r["duration_ms"] or ""]
+              for r in con.execute("SELECT * FROM cost_ledger WHERE run_id=? ORDER BY ts, call_key", (run_id,))]
+    paths.append(atomic_write_text(out / "ledger.csv", _csv(["call_key", "item_id", "stage", "provider", "operation", "status", "attempt",
+                                                              "units", "estimated_inr", "actual_inr", "http_status", "duration_ms"], ledger)))
     audit = "".join(json.dumps({**dict(r), "metadata": json.loads(r["metadata_json"])} | {"metadata_json": None}, default=str) + "\n"
                     for r in con.execute("SELECT * FROM audit_events WHERE run_id=? ORDER BY event_id", (run_id,)))
     paths.append(atomic_write_text(out / "audit.jsonl", audit))

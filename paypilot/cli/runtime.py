@@ -12,7 +12,8 @@ from typing import Iterator
 
 from paypilot.core import crash
 from paypilot.core.config import ConfigError, load_config, with_data_hash
-from paypilot.core.db import PersistenceFailure, tx
+from paypilot.core.db import PersistenceFailure
+from paypilot.ledger.store import SqliteLedger
 from paypilot.core.env import load_dotenv
 from paypilot.core.lock import LockHeld
 from paypilot.io.client_data import ClientDataError, load_client_data
@@ -112,8 +113,7 @@ def begin_recovery(con: sqlite3.Connection, run_id: str) -> None:
     """Resume protocol steps 3-4 (FAILURE_MODES §3). RESERVED ledger rows -> UNCONFIRMED (they still count against the budget).
     Open payments are reconciled with the provider BEFORE any new work; payments land in A8, so until then any existing
     payment row fails loudly instead of being ignored."""
-    with tx(con):
-        con.execute("UPDATE cost_ledger SET status='UNCONFIRMED' WHERE run_id=? AND status='RESERVED'", (run_id,))
+    SqliteLedger(con, utcnow).mark_unconfirmed(run_id)
     if con.execute("SELECT COUNT(*) FROM payments p JOIN items i ON i.item_id=p.item_id WHERE i.run_id=?", (run_id,)).fetchone()[0]:
         raise NotImplementedError("open payments must be reconciled first (payments.reconcile, task A8)")
 
@@ -125,3 +125,15 @@ def storage_paths(root: Path) -> dict[str, str]:
     if not st.get("db_path") or not st.get("lock_path"):
         raise CliError("config.yaml storage.db_path / storage.lock_path are required")
     return {k: v if os.path.isabs(v) else str(root / v) for k, v in st.items()}
+
+
+def open_existing_db(root: Path):
+    """Read-side commands (report/show/ledger): a missing or empty database is a clean 'nothing to show', not a crash."""
+    from paypilot.core.db import connect
+    db = storage_paths(root)["db_path"]
+    if not Path(db).exists():
+        raise CliError("no database yet: run a request first (python -m paypilot run --scenario DIR)")
+    con = connect(db, apply_schema=False)
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is None:
+        raise CliError("the database has no runs yet: run a request first")
+    return con
