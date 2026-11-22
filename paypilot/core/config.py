@@ -97,6 +97,6 @@ def load_config(client_id: str, *, root: Path = Path("."), config_path: Path | N
 
     phash = policy_hash_of(policy)
     runtime = {k: merged[k] for k in RUNTIME_SECTIONS}
-    chash = sha256_hex(canonical_json(runtime), phash)
-    cfg = RunConfig(**runtime, config_hash=chash, policy_hash=phash)
+    chash = sha256_hex(canonical_json({**runtime, "sources": merged["sources"]}), phash)
+    cfg = RunConfig(**runtime, sources=merged["sources"], config_hash=chash, policy_hash=phash)
     return cfg, policy, merged

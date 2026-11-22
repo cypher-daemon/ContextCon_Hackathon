@@ -22,24 +22,50 @@ class LedgerError(Exception):
     """Illegal ledger transition (e.g. confirming a row that was never reserved)."""
 
 
-class SqliteLedger:
-    def __init__(self, con: sqlite3.Connection, clock: Callable[[], datetime]):
-        self.con, self.clock = con, clock
+# Providers with no per-call price: public/unauthenticated APIs and simulations. A paid provider with a null price stays UNKNOWN.
+FREE_PROVIDERS = frozenset({"ifsc", "razorpay_ifsc", "web", "fake_provider", "razorpayx_test"})
 
-    def _next_attempt(self, e: LedgerEntry) -> int:
+
+class SqliteLedger:
+    """`run_id` / `session_id` bind the ledger to the current run: callers (lane B's ExtClient) do not know them, and the ledger
+    is the only place that does. `costs` is the config `costs` section, used to price a confirmed call whose caller passed None."""
+
+    def __init__(self, con: sqlite3.Connection, clock: Callable[[], datetime], *, run_id: str | None = None,
+                 session_id: str | None = None, costs: dict | None = None):
+        self.con, self.clock, self.run_id, self.session_id, self.costs = con, clock, run_id, session_id, costs or {}
+        self._alias: dict[str, str] = {}      # key the caller asked for -> key actually stored (only when it collided)
+
+    def _price(self, provider: str, unit_type: str, units: float) -> float | None:
+        if provider in FREE_PROVIDERS:
+            return 0.0
+        per = (self.costs.get(provider) or {}).get("inr_per_credit" if unit_type == "credits" else f"inr_per_{unit_type}")
+        return None if per is None else round(units * float(per), 6)
+
+    def _next_attempt(self, run_id: str, e: LedgerEntry) -> int:
         row = self.con.execute(
             "SELECT COALESCE(MAX(attempt),0) AS m FROM cost_ledger WHERE run_id=? AND COALESCE(item_id,'')=COALESCE(?,'') AND stage=? "
-            "AND provider=? AND operation=? AND request_hash=?", (e.run_id, e.item_id, e.stage, e.provider, e.operation, e.request_hash)).fetchone()
+            "AND provider=? AND operation=? AND request_hash=?", (run_id, e.item_id, e.stage, e.provider, e.operation, e.request_hash)).fetchone()
         return max(e.attempt, row["m"] + 1)
 
     def _insert(self, e: LedgerEntry, status: str, units: float, estimated: float | None, actual: float | None) -> str:
+        run_id, session_id = self.run_id or e.run_id, self.session_id or e.session_id
         with tx(self.con):
-            attempt = self._next_attempt(e)
-            key = ids.call_key(e.run_id, e.item_id, e.stage, e.provider, e.operation, e.request_hash, attempt)
+            attempt = self._next_attempt(run_id, e)
+            key = e.call_key
+            if not key or self.con.execute("SELECT 1 FROM cost_ledger WHERE call_key=?", (key,)).fetchone():
+                # caller's key missing or already used (a retry after a crash): derive a fresh one; the earlier spend stays on its row
+                while True:
+                    new = ids.call_key(run_id, e.item_id, e.stage, e.provider, e.operation, e.request_hash, attempt)
+                    if not self.con.execute("SELECT 1 FROM cost_ledger WHERE call_key=?", (new,)).fetchone():
+                        break
+                    attempt += 1
+                if key:
+                    self._alias[key] = new
+                key = new
             self.con.execute(
                 "INSERT INTO cost_ledger(call_key,run_id,session_id,item_id,stage,provider,operation,unit_type,units,estimated_inr,"
                 "actual_inr,status,http_status,duration_ms,request_hash,attempt,ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (key, e.run_id, e.session_id, e.item_id, e.stage, e.provider, e.operation, e.unit_type, units, estimated, actual,
+                (key, run_id, session_id, e.item_id, e.stage, e.provider, e.operation, e.unit_type, units, estimated, actual,
                  status, e.http_status if status == "CACHE_HIT" else None, None, e.request_hash, attempt, self.clock().isoformat()))
         return key
 
@@ -61,7 +87,16 @@ class SqliteLedger:
         self._insert(e, "CACHE_HIT", 0.0, 0.0, 0.0)
 
     def _update(self, call_key: str, status: str, *, units: float, actual: float | None, http: int | None, ms: int | None) -> None:
+        alias = self._alias.get(call_key)
+        if alias is not None:       # redirect only when the caller's own row is finished (a retry after a crash), never while it is in flight
+            orig = self.con.execute("SELECT status FROM cost_ledger WHERE call_key=?", (call_key,)).fetchone()
+            if orig is None or orig["status"] != "RESERVED":
+                call_key = self._alias.pop(call_key)
         with tx(self.con):
+            if status == "CONFIRMED" and actual is None:
+                row = self.con.execute("SELECT provider, unit_type FROM cost_ledger WHERE call_key=?", (call_key,)).fetchone()
+                if row is not None:
+                    actual = self._price(row["provider"], row["unit_type"], units)
             cur = self.con.execute("UPDATE cost_ledger SET status=?, units=?, actual_inr=?, http_status=?, duration_ms=? "
                                    "WHERE call_key=? AND status='RESERVED'", (status, units, actual, http, ms, call_key))
             if cur.rowcount != 1:

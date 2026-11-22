@@ -72,7 +72,8 @@ def _ctx(loaded: rt.Loaded, run_id: str, session_id: str, client_id: str, operat
 def _wire_ext(con, ctx: StageContext):
     """ExtClient over this run's ledger, cache and budget (lane B's sources/http.py). Until B3 lands it fails closed."""
     from paypilot.sources.http import make_ext_client
-    ledger, cache = SqliteLedger(con, ctx.clock), SqliteCache(con, ctx.clock)
+    ledger = SqliteLedger(con, ctx.clock, run_id=ctx.run_id, session_id=ctx.session_id, costs=ctx.cfg.costs)
+    cache = SqliteCache(con, ctx.clock)
     budget = Budget(con, ctx.run_id, cfg_limits=ctx.cfg.limits, request_limits=request_limits(con, ctx.run_id),
                     unknown_reserve_inr=float(ctx.cfg.costs.get("unknown_reserve_inr", 1.0)))
     try:
