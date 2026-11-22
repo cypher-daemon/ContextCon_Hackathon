@@ -86,3 +86,21 @@ def test_quantity_mismatch_and_previously_exhausted_po_are_flagged():
 
     assert qty_result.flags == ["PO_QTY_MISMATCH"]
     assert exhausted.flags == ["PO_EXHAUSTED", "PO_AMOUNT_MISMATCH"]
+
+
+def test_remaining_po_tolerance_boundary_and_closed_status():
+    history = FakeHistory(po_billed={"PO-NB-1043": 5_000_000})
+    within = check_po(_invoice(amount_paise=1_060_000), _resolved(), _ctx(pos=[_po()], history=history))
+    outside = check_po(_invoice(amount_paise=1_060_001), _resolved(), _ctx(pos=[_po()], history=history))
+    closed = check_po(_invoice(amount_paise=1_000_000), _resolved(), _ctx(pos=[_po(status="closed")]))
+
+    assert within.flags == []
+    assert within.details["remaining_before_paise"] == 1_000_000
+    assert outside.flags == ["PO_EXHAUSTED", "PO_AMOUNT_MISMATCH"]
+    assert closed.flags == ["PO_EXHAUSTED"]
+
+
+def test_quantity_exactly_at_order_quantity_passes():
+    result = check_po(_invoice(amount_paise=6_000_000, qty=10), _resolved(), _ctx(pos=[_po()]))
+
+    assert result.flags == []

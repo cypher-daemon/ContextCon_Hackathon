@@ -74,3 +74,16 @@ def test_lookalike_candidate_is_not_emitted_as_resolved_payee():
 
     assert result.facts.vendor_id is None
     assert result.payee_legal_name is None
+
+
+def test_equivalent_bank_line_facts_have_identical_decision_hashes():
+    resolution = Resolution(status="RESOLVED_VENDOR_MASTER", vendor_id="V-0001", legal_name="Swiggy Limited")
+    first_item = _line("BL-001")
+    second_item = first_item.model_copy(update={"item_id": "BL-999", "line_id": "BL-999",
+                                                "source_ref": "another-file.json#BL-999",
+                                                "descriptor_raw": "Swiggy Bengaluru merchant"})
+
+    first = decide(first_item, resolution, [], _policy())
+    second = decide(second_item, resolution, [], _policy())
+
+    assert first.decision_hash == second.decision_hash
