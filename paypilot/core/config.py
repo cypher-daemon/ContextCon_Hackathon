@@ -44,12 +44,19 @@ def _read_yaml(path: Path) -> dict:
     return data
 
 
+CLIENT_RUNTIME_KEYS = {"approvals": {"approvers"}}      # the one runtime key a client sets (INTERFACES §7: the approver allowlist)
+
+
 def merge_config(defaults: dict, client_policy: dict | None) -> dict:
-    """Deep-merge; a client may override POLICY sections only."""
+    """Deep-merge; a client may override POLICY sections, plus `approvals.approvers` (the allowlist). Nothing else."""
     client_policy = client_policy or {}
-    bad = sorted(set(client_policy) - set(POLICY_SECTIONS))
+    bad = sorted(set(client_policy) - set(POLICY_SECTIONS) - set(CLIENT_RUNTIME_KEYS))
+    for section, allowed in CLIENT_RUNTIME_KEYS.items():
+        extra = set(client_policy.get(section) or {}) - allowed
+        if extra:
+            bad.append(f"{section}.{sorted(extra)}")
     if bad:
-        raise ConfigError(f"policy.yaml may only override policy sections; not allowed: {bad}")
+        raise ConfigError(f"policy.yaml may only override policy sections and approvals.approvers; not allowed: {bad}")
     return _deep_merge(defaults, client_policy)
 
 

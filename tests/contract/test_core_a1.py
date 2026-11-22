@@ -121,3 +121,19 @@ def test_log_masks_separated_int_and_glued_accounts(tmp_path):
     assert rec["a"] == "****9012" and rec["b"] == "****9012" and rec["c"].endswith("****9012")
     assert rec["fp"] == fp and rec["my_token"] == "[REDACTED]" and rec["amount"] == 4200
     assert (tmp_path / "paypilot.jsonl").stat().st_mode & 0o077 == 0
+
+
+def test_client_may_set_approver_allowlist_only():
+    m = merge_config({"approvals": {"approvers": [], "lock_wait_s": 10}, "limits": {}}, {"approvals": {"approvers": ["Asha"]}})
+    assert m["approvals"] == {"approvers": ["Asha"], "lock_wait_s": 10}
+    with pytest.raises(ConfigError):
+        merge_config({"approvals": {"approvers": [], "lock_wait_s": 10}}, {"approvals": {"lock_wait_s": 0}})
+
+
+def test_approvers_in_policy_yaml_do_not_change_policy_hash(tmp_path):
+    root = tmp_path; (root / "clients/northbay").mkdir(parents=True)
+    import shutil; shutil.copy("config.yaml", root / "config.yaml")
+    c1, _, _ = load_config("northbay", root=root)
+    (root / "clients/northbay/policy.yaml").write_text("approvals:\n  approvers: [Asha, Ravi]\n")
+    c2, _, _ = load_config("northbay", root=root)
+    assert c2.approvals["approvers"] == ["Asha", "Ravi"] and c2.policy_hash == c1.policy_hash   # allowlist never stales decisions
