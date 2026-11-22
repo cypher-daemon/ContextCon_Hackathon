@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import shutil
 from contextlib import closing
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -35,6 +37,15 @@ from paypilot.reports.writer import fmt_inr, load_views
 from paypilot.schemas import Operation, Period, RunSummary
 
 app = typer.Typer(add_completion=False, no_args_is_help=True, help="PayPilot: pay every invoice at most once, never guess a payee.")
+_CTRL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _s(value) -> str:
+    """Untrusted text (bank descriptors, vendor names, web passages, reasons) is shown, never interpreted: control characters
+    and ANSI escapes are dropped and rich markup is escaped, so `[/]` cannot crash the screen and `[link=...]` cannot spoof it."""
+    return escape(_CTRL.sub("", str(value)))
+
+
 console = Console(width=max(shutil.get_terminal_size((120, 20)).columns, 110))
 _RUN_OPT = typer.Option(None, "--run", help="Run id (default: the most recent run).")
 
@@ -53,8 +64,8 @@ def render_summary(con, run_id: str, summary: RunSummary, out_dir: Path | None) 
         t.add_column(col, overflow="fold")
     for v in load_views(con, run_id):
         d = v.decision
-        t.add_row(v.row["source_ref"].split("#", 1)[-1], v.row["outcome"] or v.row["state"],
-                  (d or {}).get("payee_legal_name") or "-", fmt_inr(v.row["amount_paise"]), ", ".join((d or {}).get("flags", [])) or "-")
+        t.add_row(_s(v.row["source_ref"].split("#", 1)[-1]), _s(v.row["outcome"] or v.row["state"]),
+                  _s((d or {}).get("payee_legal_name") or "-"), fmt_inr(v.row["amount_paise"]), _s(", ".join((d or {}).get("flags", [])) or "-"))
     console.print(t)
     console.print("Outcomes: " + (", ".join(f"{k} {n}" for k, n in sorted(summary.counts.items())) or "none") +
                   f" · open exceptions: {sum(summary.open_exceptions.values())} · cost: {_cost_text(summary.cost)}"
@@ -200,27 +211,27 @@ def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoic
         for k, v in (("Item", row["item_id"]), ("Source", row["source_ref"]), ("State", f"{row['state']} (v{row['version']})"),
                      ("Outcome", row["outcome"] or "-"), ("Amount", fmt_inr(row["amount_paise"])),
                      ("Decision hash", row["decision_hash"] or "-")):
-            head.add_row(f"[bold]{k}[/bold]", str(v))
-        console.print(Panel(head, title=f"Item {row['source_ref'].split('#', 1)[-1]}"))
+            head.add_row(f"[bold]{k}[/bold]", _s(v))
+        console.print(Panel(head, title=f"Item {_s(row['source_ref'].split('#', 1)[-1])}"))
         if row["kind"] == "ParseFailure":
-            console.print("Parse errors: " + "; ".join(json.loads(row["parse_errors_json"])))
+            console.print("Parse errors: " + _s("; ".join(json.loads(row["parse_errors_json"]))))
         if res:
-            console.print(f"[bold]Resolution[/bold] {res['status']} via {res['method']}"
-                          + (f" -> {res['legal_name']} ({res['vendor_id']})" if res.get("vendor_id") else "")
-                          + (f" · candidates {[c[0] for c in res['candidates']]}" if res.get("candidates") else ""))
+            console.print(f"[bold]Resolution[/bold] {_s(res['status'])} via {_s(res['method'])}"
+                          + (f" -> {_s(res['legal_name'])} ({_s(res['vendor_id'])})" if res.get("vendor_id") else "")
+                          + (f" · candidates {_s([c[0] for c in res['candidates']])}" if res.get("candidates") else ""))
         if checks:
             t = Table(title="Checks")
             for c in ("Check", "Status", "Flags", "Reasons"):
                 t.add_column(c, overflow="fold")
             for c in checks:
-                t.add_row(c["check_id"], c["status"], ", ".join(c["flags"]) or "-", "; ".join(c["reasons"]) or "-")
+                t.add_row(_s(c["check_id"]), _s(c["status"]), _s(", ".join(c["flags"]) or "-"), _s("; ".join(c["reasons"]) or "-"))
             console.print(t)
         if d:
-            console.print(f"[bold]Decision[/bold] {d['proposal']} · flags {d['flags'] or '-'} · rules {d['rule_ids'] or '-'}")
+            console.print(f"[bold]Decision[/bold] {_s(d['proposal'])} · flags {_s(d['flags'] or '-')} · rules {_s(d['rule_ids'] or '-')}")
             for r in d["reasons"]:
-                console.print(f"  - [{r.get('rule_id') or '-'}] {r['code']}: {r['text']}")
+                console.print(f"  - {_s('[' + str(r.get('rule_id') or '-') + ']')} {_s(r['code'])}: {_s(r['text'])}")
             if d.get("missing"):
-                console.print("  missing: " + ", ".join(d["missing"]))
+                console.print("  missing: " + _s(", ".join(d["missing"])))
         srcs = con.execute("SELECT DISTINCT s.* FROM item_evidence e JOIN sources s ON s.source_id=e.source_id "
                            "WHERE e.item_id=? AND e.decision_hash=? ORDER BY s.source_id", (row["item_id"], row["decision_hash"] or "")).fetchall()
         if srcs:
@@ -228,23 +239,23 @@ def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoic
             for c in ("Source", "Provider", "Fact", "Value", "Record", "Record date"):
                 t.add_column(c, overflow="fold")
             for s_ in srcs:
-                t.add_row(s_["source_id"], s_["provider"], s_["fact"], s_["value"], s_["record_ref"],
-                          f"{s_['record_date'] or 'unknown'} ({s_['record_date_basis']})")
+                t.add_row(_s(s_["source_id"]), _s(s_["provider"]), _s(s_["fact"]), _s(s_["value"]), _s(s_["record_ref"]),
+                          _s(f"{s_['record_date'] or 'unknown'} ({s_['record_date_basis']})"))
             console.print(t)
         ev = con.execute("SELECT * FROM audit_events WHERE entity_type='item' AND entity_id=? ORDER BY event_id", (row["item_id"],)).fetchall()
         t = Table(title="Audit timeline")
         for c in ("#", "Time", "From", "To", "Actor", "Reason"):
             t.add_column(c, overflow="fold")
         for e in ev:
-            t.add_row(str(e["event_id"]), e["ts"], e["previous_state"] or "-", e["new_state"] or "-", e["actor"], e["reason"] or "-")
+            t.add_row(str(e["event_id"]), _s(e["ts"]), _s(e["previous_state"] or "-"), _s(e["new_state"] or "-"), _s(e["actor"]), _s(e["reason"] or "-"))
         console.print(t)
         for e in con.execute("SELECT * FROM exceptions WHERE item_id=? ORDER BY exception_id", (row["item_id"],)):
-            console.print(f"[bold]Exception[/bold] {e['exception_id']} {e['severity']} {e['type']} ({e['status']}): {e['summary']} -> {e['recommended_action']}")
+            console.print(f"[bold]Exception[/bold] {_s(e['exception_id'])} {_s(e['severity'])} {_s(e['type'])} ({_s(e['status'])}): {_s(e['summary'])} -> {_s(e['recommended_action'])}")
         pay = con.execute("SELECT * FROM payments WHERE item_id=?", (row["item_id"],)).fetchone()
         if pay:
-            console.print(f"[bold]Payment[/bold] {pay['payment_key']} {pay['status']} settlement {pay['settlement_status']} via {pay['provider']}")
+            console.print(f"[bold]Payment[/bold] {_s(pay['payment_key'])} {_s(pay['status'])} settlement {_s(pay['settlement_status'])} via {_s(pay['provider'])}")
             for a in con.execute("SELECT * FROM payment_attempts WHERE payment_id=? ORDER BY attempt_no", (pay["payment_id"],)):
-                console.print(f"  attempt {a['attempt_no']} {a['attempt_key']} step {a['step']} outcome {a['outcome']} ref {a['provider_ref'] or '-'}")
+                console.print(f"  attempt {a['attempt_no']} {_s(a['attempt_key'])} step {_s(a['step'])} outcome {_s(a['outcome'])} ref {_s(a['provider_ref'] or '-')}")
 
 
 @app.command()

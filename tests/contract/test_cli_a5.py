@@ -232,3 +232,25 @@ def test_stage_not_built_exits_1_records_it_and_resume_finishes_once_it_is(world
     r = cli("resume")
     assert r.exit_code == 0 and {x[0] for x in con.execute("select outcome from items")} == {"POSTED", "CANNOT_VERIFY", "HELD"}
     assert con.execute("select count(*) from journal_entries").fetchone()[0] == 2
+
+
+def test_untrusted_text_is_shown_not_interpreted(world):
+    """Reason templates and names carry text from untrusted files (bank descriptors, web passages). '[/]' used to crash `show`,
+    and '[link=...]' / '[bold green]VERIFIED[/]' could spoof the screen an approver relies on."""
+    cli("run", "--scenario", str(world / "scenarios/S1"))
+    con = connect(str(world / "var/paypilot.db"))
+    row = con.execute("select item_id, decision_json from items where source_ref like '%BL-1'").fetchone()
+    d = json.loads(row["decision_json"])
+    d["payee_legal_name"] = "Swiggy [/] [link=https://evil.example]Limited[/link]"
+    d["reasons"] = [{"code": "X", "text": "descriptor [/] [bold green]VERIFIED[/bold green] \x1b[31mred", "rule_id": "R[1]", "evidence_refs": []}]
+    with con:
+        con.execute("update items set decision_json=? where item_id=?", (json.dumps(d), row["item_id"]))
+    for args in (("show", "BL-1"), ("report",)):
+        r = cli(*args)
+        assert r.exit_code == 0 and "Traceback" not in r.output and r.exception is None, (args, r.output[-300:])
+        assert "\x1b" not in r.output                                                  # no escape sequences reach the terminal
+        flat = " ".join(r.output.split())
+        if args[0] == "show":      # the reason text is shown literally, not obeyed
+            assert "[bold green]VERIFIED[/bold green]" in flat and "descriptor [/]" in flat
+        else:                      # the payee name sits in a table cell (may fold across lines)
+            assert "evil.example" in flat
