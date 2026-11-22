@@ -20,7 +20,8 @@ def canonical_json(obj: Any) -> str:
 
 
 def sha256_hex(*parts: Any) -> str:
-    return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
+    """Hash an unambiguous encoding (a JSON array), so ("a|b","c") != ("a","b|c")."""
+    return hashlib.sha256(json.dumps([str(p) for p in parts], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def run_id(client_id: str, request_sha: str) -> str:

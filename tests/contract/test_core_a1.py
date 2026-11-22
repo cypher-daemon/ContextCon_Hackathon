@@ -107,3 +107,17 @@ def test_audit_event_is_atomic_with_state_change():
         append_event(con, run_id="R", session_id="S", entity_type="item", entity_id="i", previous_state=None,
                      new_state="NEW", actor="t", ts=NOW)
     assert con.execute("select count(*) from audit_events").fetchone()[0] == 1
+
+
+def test_sha256_parts_are_unambiguous():
+    assert ids.sha256_hex("a|b", "c") != ids.sha256_hex("a", "b|c")
+    assert ids.run_id("c|x", "s") != ids.run_id("c", "x|s")
+
+
+def test_log_masks_separated_int_and_glued_accounts(tmp_path):
+    fp = "ab" * 32
+    JsonlLogger(tmp_path).log("x", a="1234-5678-9012", b=123456789012, c="acct123456789012", fp=fp, my_token="t0k", amount=4200)
+    rec = json.loads((tmp_path / "paypilot.jsonl").read_text())
+    assert rec["a"] == "****9012" and rec["b"] == "****9012" and rec["c"].endswith("****9012")
+    assert rec["fp"] == fp and rec["my_token"] == "[REDACTED]" and rec["amount"] == 4200
+    assert (tmp_path / "paypilot.jsonl").stat().st_mode & 0o077 == 0
