@@ -8,8 +8,6 @@
 5. `docs/SCENARIOS.md`
 6. `docs/TASKS.md` (your tasks are `B*` or `C*`)
 
-`docs/archive/` is history only; do not follow it.
-
 Your human tells you which lane this session is: **B** (identity & evidence) or **C** (policy, exceptions, scenarios). Claude is lane **A** (runtime) and works in parallel.
 
 ## What you may edit

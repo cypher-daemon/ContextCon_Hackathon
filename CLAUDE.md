@@ -8,7 +8,7 @@
 5. `docs/SCENARIOS.md`
 6. `docs/TASKS.md` (your tasks are `A*`)
 
-`docs/archive/` is history only. Codex works lanes B and C in parallel under `AGENTS.md`.
+Codex works lanes B and C in parallel under `AGENTS.md`.
 
 ## You own
 - **Shared contract:** `paypilot/schemas.py`, `paypilot/context.py`, `db/schema.sql`, `pyproject.toml`, `.gitignore`, `.env.example`. You apply every `docs/CONTRACT_CHANGES.md` request as one `contract:` commit.
