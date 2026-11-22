@@ -28,5 +28,5 @@
 
 ## Workflow
 - `git pull --rebase` before each task and push. Lane prefixes: `core:` `io:` `cli:` `payments:` `ledger:` `reports:` `contract:` `test:`. No force-push.
-- **Commit or push only when the human says so.**
+- **Agents commit; only humans push** (or explicitly tell an agent to push).
 - **Gate before each push:** `pytest -q tests/contract tests/integration`. Run `tests/crash/` before every checkpoint.

@@ -171,7 +171,7 @@ An item is **never** `PAID` because it was approved, a payout request was sent, 
 2. **Outbox:** the payment row is committed *after* approval and *before* any provider call.
 3. **Provider call, recorded step by step:** `create` → **persist the provider ref** → `confirm`. Each step has its own provider idempotency key, and a `step` column records which call may have landed. FakeProvider uses a real two-step create/confirm. RazorpayX creates and initiates the payout in **one** call (`POST /v1/payouts`, header `X-Payout-Idempotency`). Its `confirm()` makes no money-moving call: it only retrieves status (INTERFACES §8).
 4. **Reconcile before acting:** every `run`, `resume` and `approve` reconciles open payments with the provider *before* any new work.
-5. **Fail closed:** if the provider is unreachable, returns an unrecognised status, or the idempotency window has expired (or, for RazorpayX, is undocumented) and no lookup can prove the outcome, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
+5. **Fail closed:** if the provider is unreachable, returns an unrecognised status, or the replay window has passed (RazorpayX: 24 h configured, inside the documented 168 h key validity) and no lookup can prove the outcome, the payment becomes `PAYMENT_UNCERTAIN` with an exception. A person reconciles it. **An empty search is never treated as permission to pay again.**
 6. **Containment:** while a CRITICAL payment exception is open for a vendor, no new payment to that vendor can be queued.
 
 ```mermaid
@@ -291,9 +291,10 @@ erDiagram
   RUNS ||--o{ ITEMS : contains
   ITEMS ||--o{ JOURNAL_ENTRIES : "one per kind"
   JOURNAL_ENTRIES ||--|{ JOURNAL_LINES : "balanced Dr = Cr"
-  ITEMS ||--o{ APPROVALS : "one per decision_hash"
+  ITEMS ||--o{ APPROVALS : "one per decision_hash + approval_seq"
   ITEMS ||--o| PAYMENTS : "one logical payment"
   PAYMENTS ||--o{ PAYMENT_ATTEMPTS : "attempt n+1 only after confirmed failure"
+  APPROVALS ||--o{ PAYMENT_ATTEMPTS : "authorizes"
   ITEMS ||--o{ ITEM_EVIDENCE : cites
   SOURCES ||--o{ ITEM_EVIDENCE : "is cited by"
   ITEMS ||--o{ EXCEPTIONS : raises
@@ -314,7 +315,7 @@ The full DDL, with every UNIQUE constraint that enforces "at most once", is in [
 - **Policy snapshot per run.** The exact merged config and policy, plus the client-data hash, are stored on the run row.
 - **`audit verify`** replays the run line by line from the database alone:
   1. Re-runs `decide()` on the stored facts and policy snapshot → the same `decision_hash` for every item.
-  2. Every PAID item has exactly one APPROVED approval with the matching hash, one confirmed provider attempt, and one journal entry.
+  2. Every PAID item has one confirmed provider attempt, linked to an APPROVED approval with the matching hash, and one payment journal entry. Every attempt n > 1 has its own, later approval (`approval_seq` n) and follows a provider-confirmed failure of attempt n−1.
   3. No payment key has more than one confirmed attempt.
   4. Every journal entry balances, and the trial balance sums to zero.
   5. Every state change has an unbroken audit-event chain.
@@ -326,7 +327,7 @@ The full DDL, with every UNIQUE constraint that enforces "at most once", is in [
 |---|---|
 | One item row per input row | `items.item_id` deterministic + `UNIQUE(run_id, input_name, row_no)` |
 | One journal entry per item and kind | `journal_entries UNIQUE(item_id, kind)` |
-| One approval per decision | `approvals UNIQUE(item_id, decision_hash)` |
+| One approval per decision (per retry) | `approvals UNIQUE(item_id, decision_hash, approval_seq)`; seq n+1 only after a provider-confirmed failure |
 | One logical payment per invoice | `payments.payment_key UNIQUE`, `payments.item_id UNIQUE` |
 | One provider attempt key per attempt | `payment_attempts.attempt_key UNIQUE` |
 | One exception per cause | `exceptions UNIQUE(subject_id, type, origin_key)` |

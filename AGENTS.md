@@ -53,7 +53,7 @@ Need a contract change? Append to `docs/CONTRACT_CHANGES.md` and tell your human
 8. Money is integer paise; ₹ appears only in reports.
 
 ## Workflow
-- `git pull --rebase` before every task and push. Small commits with your lane prefix (`resolve:` `sources:` / `checks:` `decide:` `exceptions:` `reconciliation:` `scenarios:` / `test:`). Put the task id in the message. **No force-push.**
+- `git pull --rebase` before every task and push. Small commits with your lane prefix (`resolve:` `sources:` / `checks:` `decide:` `exceptions:` `reconciliation:` `scenarios:` / `test:`). Put the task id in the message. **Agents commit; only humans push** (or explicitly tell an agent to push). **No force-push.**
 - **Gate before each push:** `pytest -q tests/contract tests/unit`.
 - Unit tests use `tests/fakes.py` only. No network in unit tests.
 - A rebase conflict in a file you don't own → stop and tell your human.

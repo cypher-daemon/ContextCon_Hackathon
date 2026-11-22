@@ -78,7 +78,7 @@ scenarios/<scenario_id>/
 | `ledger.csv` | Every external call: provider, operation, status, units, ₹ (or UNKNOWN), duration |
 | `audit.jsonl` | The audit events for this run |
 | `journal.csv` / `trial_balance.csv` | Every journal line (entry, account, Dr, Cr, item, decision_hash) and the per-account totals (Σ = 0) |
-| `payment_instructions.csv` | **Audit/reconciliation export, not an instruction to pay.** One row per approved payment: `do_not_execute` (always `TRUE`), payment_key, attempt_key, vendor, account last 4, amount, approval, `provider` (`fake` / `razorpayx_test`), `provider_ref`, `provider_status` (raw, e.g. `processing`), payment `status`, `settlement_status`, `utr` (if any). Every row is written from the DB state at export time, and the payment it describes has **already been submitted through the provider**. Releasing it to a bank would be a second payment. A bank-upload workflow, if ever wanted, is a separate future feature and is not built |
+| `payment_instructions.csv` | **Audit/reconciliation export, not an instruction to pay.** One row per `payments` row, i.e. every approved payment (the row exists from the approval → outbox transaction onward, before any provider call). No row for an item that was never approved. Columns: `do_not_execute` (always `TRUE`), payment_key, attempt_key, vendor, account last 4, amount, approval, `provider` (`fake` / `razorpayx_test`), `provider_ref`, `provider_status` (raw, e.g. `processing`), payment `status`, `settlement_status`, `utr` (if any). The file is rewritten, from DB state only, at the end of every `run` / `resume` / `approve` and by `report` / `export`, so it reflects the latest attempt. Rows are emitted for every status: `CREATED` / `SUBMITTED` (`provider_ref` may be empty), `PROVIDER_CONFIRMED`, `FAILED`, `RETURNED` / `REVERSED`, and **`PAYMENT_UNCERTAIN`**. A lost response gives `provider_ref` empty if none was ever received and `provider_status = UNKNOWN`: the money may already have moved, so an empty ref is **never** a reason to pay by hand. Every payment it lists has been, or may have been, **submitted through the provider**, so releasing it to a bank could pay twice. A bank-upload workflow, if ever wanted, is a separate future feature and is not built |
 | `summary.json` | `RunSummary`: counts by outcome, open exceptions, elapsed, cost and `cost_status` |
 
 `results.jsonl` line (default fields):
@@ -182,13 +182,13 @@ class ReconciliationResult(BaseModel): subject_ref: str; status: SettlementStatu
                            flags: list[str]; evidence: list[Source]
 
 # ---- runtime records (lane A) ----
-class Approval(BaseModel): approval_id: str; item_id: str; decision_hash: str
+class Approval(BaseModel): approval_id: str; item_id: str; decision_hash: str; approval_seq: int   # 1, 2, … per (item, hash)
                            status: Literal["PENDING","APPROVED","REJECTED","SUPERSEDED"]; reviewer: str | None
                            reason: str | None; overrides: list[str]; requested_at: datetime; decided_at: datetime | None
 class Payment(BaseModel):  payment_id: str; item_id: str; approval_id: str; payment_key: str; provider: str
                            amount_paise: int; currency: str; status: PaymentStatus; settlement_status: SettlementStatus
                            current_attempt: int; created_at: datetime; updated_at: datetime
-class PaymentAttempt(BaseModel): attempt_key: str; payment_id: str; attempt_no: int; provider_ref: str | None
+class PaymentAttempt(BaseModel): attempt_key: str; payment_id: str; attempt_no: int; approval_id: str; provider_ref: str | None
                            step: AttemptStep; outcome: Literal["PENDING","SUCCEEDED","DECLINED","UNKNOWN"]
                            last_error: str | None; created_at: datetime; updated_at: datetime
 class ExceptionRecord(ExceptionDraft): exception_id: str; run_id: str; status: ExceptionStatus; assigned_to: str | None
@@ -236,7 +236,7 @@ class RunSummary(BaseModel): run_id: str; request_id: str; client_id: str; opera
 | `payment_key` (logical) | `pp_` + sha256(client_id \| vendor_id \| invoice_no_canonical \| amount_paise \| currency)[:32]. **Immutable.** A PAY item without an invoice number is CANNOT_VERIFY (`MISSING_FIELD`) |
 | `attempt_key` (provider) | `{payment_key}:a{n}`; per-step keys `{attempt_key}:create` / `{attempt_key}:confirm`. n+1 only after a provider-confirmed DECLINED / RETURNED / REVERSED **and** a new approval. RazorpayX's `X-Payout-Idempotency` allows only 4–36 characters (letters, digits, `-`, `_`, space), so the adapter sends `uuid5(PAYPILOT_NS, "{attempt_key}:create")` (36 chars), derived deterministically and never random. `reference_id` = `attempt_key` (≤ 40 chars) |
 | `decision_hash` | sha256(canonical_json(Facts) \| policy.decision_hash_input). The input covers only decision-relevant config (rules, thresholds, mappings, tolerances) + data_hash. **Never timestamps, source ids or output/limit/logging config** |
-| `approval_id` | sha256(item_id \| decision_hash)[:16] |
+| `approval_id` | sha256(item_id \| decision_hash \| approval_seq)[:16]. `approval_seq` starts at 1. Seq n+1 may be requested **only** when the payment's latest attempt has a provider-confirmed DECLINED / RETURNED / REVERSED outcome and the item is back in HELD after fresh checks. Otherwise a second approve is a no-op. Approval ids never enter `payment_key` or `attempt_key` |
 | `source_id` | sha256(provider \| record_ref \| fact \| field_or_passage)[:16] (retrieval time excluded) |
 | `exception_id` | sha256(item_id \| payment_id \| type \| origin_key)[:16] |
 | `call_key` | sha256(run_id \| item_id \| stage \| provider \| operation \| request_hash \| attempt) |
@@ -282,14 +282,16 @@ CREATE TABLE journal_lines (entry_id TEXT NOT NULL REFERENCES journal_entries, l
 -- balance (sum of debits = sum of credits per entry) is enforced in the same txn by core and re-checked by `audit verify`
 CREATE TABLE approvals (approval_id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES items, decision_hash TEXT NOT NULL,
   status TEXT NOT NULL CHECK(status IN('PENDING','APPROVED','REJECTED','SUPERSEDED')), reviewer TEXT, reason TEXT,
-  overrides_json TEXT NOT NULL DEFAULT '[]', requested_at TEXT NOT NULL, decided_at TEXT, UNIQUE(item_id, decision_hash));
+  overrides_json TEXT NOT NULL DEFAULT '[]', requested_at TEXT NOT NULL, decided_at TEXT,
+  approval_seq INTEGER NOT NULL DEFAULT 1, UNIQUE(item_id, decision_hash, approval_seq));
 CREATE TABLE payments (payment_id TEXT PRIMARY KEY, item_id TEXT NOT NULL UNIQUE REFERENCES items,
-  approval_id TEXT NOT NULL REFERENCES approvals, payment_key TEXT NOT NULL UNIQUE, vendor_id TEXT NOT NULL,
+  approval_id TEXT NOT NULL REFERENCES approvals,   -- the approval for attempt 1; each attempt records its own
+  payment_key TEXT NOT NULL UNIQUE, vendor_id TEXT NOT NULL,
   provider TEXT NOT NULL, amount_paise INTEGER NOT NULL, currency TEXT NOT NULL, status TEXT NOT NULL,
   settlement_status TEXT NOT NULL DEFAULT 'NOT_AVAILABLE', current_attempt INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE payment_attempts (attempt_key TEXT PRIMARY KEY, payment_id TEXT NOT NULL REFERENCES payments,
-  attempt_no INTEGER NOT NULL, provider_ref TEXT UNIQUE, step TEXT NOT NULL DEFAULT 'NONE', outcome TEXT NOT NULL DEFAULT 'PENDING',
+  attempt_no INTEGER NOT NULL, approval_id TEXT NOT NULL REFERENCES approvals, provider_ref TEXT UNIQUE, step TEXT NOT NULL DEFAULT 'NONE', outcome TEXT NOT NULL DEFAULT 'PENDING',
   last_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(payment_id, attempt_no));
 CREATE INDEX ix_attempts_open ON payment_attempts(outcome) WHERE outcome IN('PENDING','UNKNOWN');
 CREATE TABLE exceptions (exception_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, item_id TEXT REFERENCES items,
@@ -327,9 +329,10 @@ limits: {max_runtime_seconds: 600, max_cost_inr: 25.0, max_cost_inr_per_item: 5.
 payments: {provider: fake, currency: INR, idem_window_h: 23,         # provider ∈ fake | razorpayx_test (no live option exists)
            refuse_live_keys: true, approve_executes_inline: true,
            razorpayx_test: {base_url: https://api.razorpay.com/v1, mode: IMPS, purpose: vendor bill,
-                            idem_replay_window_h: 1, call_timeout_s: 20}}
+                            idem_replay_window_h: 24, call_timeout_s: 20}}
   # .env (never committed): RAZORPAYX_KEY_ID (must start rzp_test_), RAZORPAYX_KEY_SECRET, RAZORPAYX_ACCOUNT_NUMBER (test-mode Customer Identifier)
-  # idem_replay_window_h: RazorpayX does not document how long an idempotency key is honoured, so this is a conservative assumption (UNVERIFIED)
+  # idem_replay_window_h: RazorpayX documents a 7-day (168 h) idempotency-key validity (team-supplied; doc link to cite in DECISIONS §3; not yet checked by us).
+  # We replay only within 24 h: that covers the one-day event with a wide margin. Past it → PAYMENT_UNCERTAIN, never a new create.
 approvals: {approvers: [], lock_wait_s: 10}               # [] = any name (declared identity); policy.yaml sets the allowlist
 costs:
   crustdata: {inr_per_credit: null, estimates: {identify: 0.2, web_fetch: 1}}
@@ -428,7 +431,7 @@ class PaymentProvider(Protocol): # A: payments/fake.py (default, test target); p
     def create(self, key: str, amount_paise: int, currency: str, metadata: dict) -> ProviderPayment: ...
     def confirm(self, provider_ref: str, key: str) -> ProviderPayment: ...
     def retrieve(self, provider_ref: str) -> ProviderPayment: ...
-    def find_by_attempt_key(self, attempt_key: str) -> ProviderPayment | None: ...   # metadata search
+    def find_by_attempt_key(self, attempt_key: str) -> ProviderPayment | None: ...   # Fake: lookup in its own store; RazorpayX: same-key replay (below), no search
     def refund(self, provider_ref: str, key: str) -> ProviderPayment: ...           # only if demonstrated + labelled
 # ProviderPayment(ref, status: REQUIRES_CONFIRMATION|PROCESSING|SUCCEEDED|DECLINED|CANCELED|RETURNED, amount_paise, currency, metadata, raw_ref)
 # An unrecognised provider status → the adapter raises ProviderStatusUnknown → PAYMENT_UNCERTAIN (never mapped to success).
@@ -441,7 +444,7 @@ class PaymentProvider(Protocol): # A: payments/fake.py (default, test target); p
 | `create` | `POST /v1/payouts` (composite: contact + fund account + payout), basic auth `key_id:key_secret`, header `X-Payout-Idempotency` | Creates **and initiates** the payout in one call, so it returns `PROCESSING` (never `REQUIRES_CONFIRMATION`). `account_number` = `RAZORPAYX_ACCOUNT_NUMBER`. `fund_account.bank_account` comes from the vendor master: at execute time `io/` re-reads the row, checks `HMAC(raw) == approved account_fingerprint` (a mismatch → refuse, `BANK_CHANGED`), and passes the raw number **in memory only**, never logged, stored or hashed into `request_hash`. The body is built deterministically from the payment row + the vendor-master row, because the same key with a different body is rejected (`BAD_REQUEST`) |
 | `confirm` | none: `GET /v1/payouts/{id}` | No money-moving call. It keeps the executor's step sequence unchanged |
 | `retrieve` | `GET /v1/payouts/{id}` | Used by `reconcile_open` |
-| `find_by_attempt_key` | re-send `create` with the **same** idempotency key + identical body, only while the attempt is younger than `idem_replay_window_h`; otherwise returns `None` | Docs: the first response is saved and replayed for the same key. A search by `reference_id` is **not documented**, so we don't rely on it. `None` → PAYMENT_UNCERTAIN; **never create** |
+| `find_by_attempt_key` | **no search endpoint is used or assumed.** It replays the identical `create` request (same idempotency key, byte-identical body), only while the attempt is younger than `idem_replay_window_h` (24 h, inside the documented 168 h validity); otherwise it returns `None` without any call | Docs: the first response is saved and returned for the same key. `None` → PAYMENT_UNCERTAIN; **never create** |
 | `refund` | not supported (payouts aren't refunded) | raises `NotSupported`; recovery stays a human-led recovery case |
 
 | RazorpayX `status` | Terminal? | `ProviderPayment.status` | Payment / item |
@@ -490,9 +493,11 @@ reconciliation.match.three_way(decision: Decision | None, payment: Payment | Non
 | `run` | `--scenario DIR` or `--request PATH` `[--provider fake\|razorpayx_test]` | the same request file is the same run (resume semantics) |
 | `resume` | `[--run RUN_ID]` | marks RESERVED ledger rows UNCONFIRMED → reconciles payments → continues |
 | `approvals` | `[--run RUN_ID]` | queue: payee + source, amount, account last 4, three bank statuses, flags, reasons, evidence, open exceptions |
-| `approve` | `ITEM_ID --by NAME [--reason TEXT] [--override FLAG…]` | takes the lock (waits `lock_wait_s`); binds the current decision_hash; refuses NEVER_OVERRIDABLE; an override needs a reason; executes the payment inline |
-| `reject` | `ITEM_ID --by NAME --reason TEXT` | → REJECTED |
-| `show` | `ITEM_ID` | decision → rule → flag → check → evidence → source; audit timeline; exceptions; payment and attempts |
+| `approve` | `ITEM [--run RUN_ID] --by NAME [--reason TEXT] [--override FLAG…]` | takes the lock (waits `lock_wait_s`); binds the current decision_hash; refuses NEVER_OVERRIDABLE; an override needs a reason; executes the payment inline |
+| `reject` | `ITEM [--run RUN_ID] --by NAME --reason TEXT` | → REJECTED |
+| `show` | `ITEM [--run RUN_ID]` | decision → rule → flag → check → evidence → source; audit timeline; exceptions; payment and attempts |
+
+**Item selector (`ITEM`):** either the exact 20-char `item_id`, or a source identifier (`invoice_id`, `line_id` or `message_id`, e.g. `INV-201`, `BL-001`) matched exactly within `--run` (default: the most recent run). Exactly one match → that item. Zero or more than one match (e.g. the same `invoice_id` in two input files) → exit 2, listing the candidate `item_id`s with their `source_ref`. It never picks one.
 | `exceptions` | `[--run RUN_ID] [--open] [--severity S]` | sorted by severity, then age |
 | `exception` / `resolve-exception` | `EXC_ID` / `EXC_ID --by NAME --resolution CODE --note TEXT [--evidence SOURCE_ID…]` | RESOLVED / RECOVERED require evidence |
 | `report` / `ledger` / `export` | `[--run RUN_ID] [--json] [--out PATH]` | `ledger` shows cost_status KNOWN / PARTIAL / UNKNOWN |

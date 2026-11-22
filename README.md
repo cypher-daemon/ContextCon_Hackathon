@@ -19,9 +19,9 @@ pip install -e ".[dev]" && cp .env.example .env    # BANK_HMAC_KEY + CRUSTDATA_A
 python -m paypilot run --scenario scenarios/SC-01    # month-end bank posting
 python -m paypilot run --scenario scenarios/SC-03                    # invoices → approval queue
 python -m paypilot approvals
-python -m paypilot approve <ITEM_ID> --by "Finance Controller"
+python -m paypilot approve INV-201 --by "Finance Controller"    # item_id or a unique invoice_id / line_id
 python -m paypilot resume                                             # after any crash
-python -m paypilot show <ITEM_ID>    # decision → rule → flag → check → evidence → source
+python -m paypilot show BL-001       # decision → rule → flag → check → evidence → source
 python -m paypilot exceptions --open
 python -m paypilot audit verify      # replay the books line by line
 python -m paypilot ledger            # ₹ per item, measured

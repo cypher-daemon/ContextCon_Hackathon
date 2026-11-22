@@ -22,7 +22,7 @@
 | ★C0 | `flags.py` (FAILURE_MODES §1 + `NEVER_OVERRIDABLE`); `policy_config.py` (models for C and B config sections) | C | – | 20m | P0 | `core/config.py` stub validates `config.yaml` through these models |
 | H1 | `.env`: `BANK_HMAC_KEY` (random), `CRUSTDATA_API_KEY`; confirm the Crustdata credit balance | H | – | 10m | P0 | `GET /account/credits` works |
 | H2 | Ask the Crustdata team for ₹ per credit; note the answer + source | H | – | 10m | P0 | recorded in DECISIONS.md §3 |
-| ★H7 | **Verify RazorpayX test-mode access:** open RazorpayX in test mode; generate test API keys (record the real prefix; we expect `rzp_test_`); copy the test-mode Customer Identifier; note any KYC, activation or IP-allowlist prompt for test mode. Then one `curl` probe: `POST /v1/payouts` (composite, fictional bank details) with `X-Payout-Idempotency` → `pout_…` in `processing`; repeat with the same key + body → same `pout_…`; `GET /v1/payouts/{id}`; move it to `processed` / `failed` in the Dashboard and re-fetch. Write the findings and any blocker into DECISIONS §3 | H | – | 30m | P0 | probe output saved (secrets redacted), or a precise blocker recorded |
+| ★H7 | **Verify RazorpayX test-mode access:** open RazorpayX in test mode; generate test API keys (record the real prefix; we expect `rzp_test_`); copy the test-mode Customer Identifier; note any KYC, activation or IP-allowlist prompt for test mode. Then one `curl` probe: `POST /v1/payouts` (composite, fictional account number + the B4-verified ‹IFSC-B›) with `X-Payout-Idempotency` → `pout_…` in `processing`; repeat with the same key + body → same `pout_…`; `GET /v1/payouts/{id}`; move it to `processed` / `failed` in the Dashboard and re-fetch. Write the findings and any blocker into DECISIONS §3 | H | – | 30m | P0 | probe output saved (secrets redacted), or a precise blocker recorded |
 
 ## 3. S1: Vertical slice, SC-01 end to end (target 14:15)
 
@@ -32,7 +32,7 @@
 | ★A2 | `core/state.py` (ALLOWED map, CAS on state+version, audit in the same txn) + `core/crash.py` | A | A1 | 30m | P0 | illegal/stale transitions raise; audit row is atomic |
 | ★A3 | `io/` request + batch (decimal-string → paise, fingerprint at load) + client data (+ data-quality scan → `data_quality`) | A | A1 | 40m | P0 | SC-01 loads; no raw account in any model |
 | ★A4 | `core/history.py` + `core/pipeline.py` drive (ingest → resolve → check → decide → classify → post/queue/hold) + **`core/journal.py`**: balanced double-entry entries written in the same txn as POSTED / accrual / PAID, balance asserted before commit | A | A2, A3 | 75m | P0 | SC-01 runs with stub logic; journal balanced; `journal.csv` written |
-| ★A5 | `cli/` run/resume/report/show (+ `rich` tables) + `reports/writer.py` (results.jsonl, report.md, summary.json, atomic writes, FIELD_GETTERS) | A | A4 | 45m | P0 | `python -m paypilot run --scenario scenarios/SC-01 --provider fake` prints the table |
+| ★A5 | `cli/` run/resume/report/show (+ `rich` tables; item selector per INTERFACES §10) + `reports/writer.py` (results.jsonl, report.md, summary.json, atomic writes, FIELD_GETTERS) | A | A4 | 45m | P0 | `python -m paypilot run --scenario scenarios/SC-01 --provider fake` prints the table |
 | ★B1 | `resolve/normalize.py`: descriptor_key, name_key, invoice_canonical | B | A0 | 30m | P0 | table tests: RAZ*, PAYTM*, UPI/…/BENGALURU, EMEA kept, invoice variants (`BDE/26-27/7781` ≡ `BDE-26-27-07781`) |
 | ★B2 | `resolve/matcher.py`: GSTIN/CIN → fingerprint → exact → alias → fuzzy; tie; lookalike; vendor-master Sources | B | B1 | 60m | P0 | Swiggy, AWS EMEA, PAYTM unresolved, Om Sai tie, Delhivery lookalike |
 | ★C1 | `clients/northbay/` (vendor master with ‹IFSC› placeholders, POs, history, policy.yaml) + `scenarios/SC-01`, `SC-02` + `expected.jsonl` | C | C0 | 40m | P0 | files validate against schemas |
@@ -41,6 +41,7 @@
 | ★C4a | `checks/account.py` (vendor default → category map → ACCOUNT_UNMAPPED) | C | C0 | 20m | P0 | Swiggy → Staff meals with source |
 | ★C6 | `decide/rules.py` (load + validate: every flag covered) + `decide/engine.py` (all reasons, precedence, decision_hash) | C | C2 | 45m | P0 | SC-01 proposals match; consistency test (BL-001 vs BL-101) |
 | ★C7a | `exceptions/classify.py` (flag → type/severity pre/post via `exceptions.map`) | C | C6 | 30m | P0 | SC-01 BL-003 / BL-004 produce the right drafts |
+| ★A5b | `cli/selector.py`: resolve `ITEM` = exact `item_id` or a unique `invoice_id` / `line_id` / `message_id` within `--run`; ambiguous or missing → exit 2 with candidates. `tests/contract/test_cli_selector.py` (exact id, source id, ambiguous across two files, unknown) | A | A5 | 20m | P0 | `show BL-001` and `approve INV-201` work; an ambiguous id is refused |
 | ★A-S1 | **Integrate:** `tests/integration/test_scenarios.py` runs SC-01 against the real B/C modules | A | A5, B2, C1–C7a | 20m | P0 | SC-01 matches `expected.jsonl` |
 
 ## 4. S2: Payment safety (target 15:30) **Checkpoint commit**
@@ -48,7 +49,7 @@
 | ID | Task | Lane | Deps | Est | P | Done when |
 |---|---|---|---|---|---|---|
 | ★A6 | `ledger/` (reserve/confirm/fail/cache-hit, UNCONFIRMED on resume, summary) + Budget (cost/time; unknown_reserve) + CachePort | A | A1 | 40m | P0 | the cost-limit test stops safely |
-| ★A7 | `approvals/` + CLI approvals/approve/reject (allowlist, NEVER_OVERRIDABLE, decision_hash binding, lock wait, inline execute) | A | A4 | 40m | P0 | double approve = no-op; override refused; stale refused |
+| ★A7 | `approvals/` + CLI approvals/approve/reject (allowlist, NEVER_OVERRIDABLE, decision_hash binding, `approval_seq` for a retry after a provider-confirmed failure, each attempt linked to its approval, lock wait, inline execute) | A | A4 | 40m | P0 | double approve = no-op; override refused; stale refused; decline → new approval (seq 2) → attempt a2 linked to it |
 | ★A8 | `payments/`: PaymentProvider, FakeProvider (own SQLite, fault injection incl. `PROCESSING`), payments + attempts, step-recorded executor, `reconcile_open`, vendor containment check in the enqueue txn; PAID **only** on terminal success (non-terminal → SUBMITTED / PAYMENT_IN_PROGRESS); account re-fingerprint at execute | A | A7 | 70m | P0 | FAILURE_MODES #23–26, #46, #47, #49 tests green |
 | ★A10 | `tests/crash/`: every crash point, kill loop ×30, SIGTERM, persistence failure (exit 70, no provider call) | A | A8 | 60m | P0 | 30/30 green; at most one provider success per payment key |
 | ★B3 | `sources/http.py` ExtClient (token bucket per endpoint, retry + jitter, 429 → `x-ratelimit-reset`, 402 → stop, 401/403 → typed, timeout, CachePort, LedgerPort, BudgetPort, redaction) | B | A0 | 60m | P0 | fake-transport tests for 200/429/402/403/timeout/budget |
@@ -71,7 +72,8 @@
 | ★C9b | `scenarios/SC-07`, `SC-08`, `SC-09`, `SC-10`, `SC-11` (re-sent file) + expected files, DB and audit | C | C9a, B6 | 45m | P0 | diffs clean |
 | C10 | Remaining C-owned FAILURE_MODES unit tests | C | above | 40m | P0 | every C row has a passing test |
 | ★A17 | **`audit verify`**: replay decisions from stored facts + policy snapshot; approval ↔ attempt ↔ journal links; one confirmed attempt per payment key; balanced entries + trial balance; audit-chain continuity; source resolution. Plus the SC-12 tamper test | A | A4, A11 | 50m | P0 | SC-12 green; a tampered DB copy fails with the entry named |
-| B4 | `sources/ifsc.py` (optional check) + **verify the real IFSC codes** for ‹IFSC-A/B/C/D› and a 404 code for ‹IFSC-INVALID›; give them to C; C5 then sets `ifsc_valid` | B | B3 | 30m | P1 | live 200 + 404 recorded in the ledger; SC-04 INV-303 shows IFSC_INVALID |
+| B4 | `sources/ifsc.py` (optional check) + **verify the real IFSC codes** for ‹IFSC-A/B/C/D› and a 404 code for ‹IFSC-INVALID›; give them to C; C5 then sets `ifsc_valid`. **‹IFSC-B› is P0** (SC-13 / A9 depends on it): verify it first | B | B3 | 30m | P1 (‹IFSC-B›: P0) | live 200 + 404 recorded in the ledger; SC-04 INV-303 shows IFSC_INVALID |
+| ★A9 | `payments/razorpayx_test.py` behind `PaymentProvider` (INTERFACES §8): composite `POST /v1/payouts`, derived `X-Payout-Idempotency`, `GET /v1/payouts/{id}`, status mapping, replay window, raw account in memory only; config check (only `fake` / `razorpayx_test`; key must be `rzp_test_`; all 3 env vars present; startup banner; no fallback); ledger rows `razorpayx_test`; unit tests on **recorded** responses; `pytest -m razorpayx` runs SC-13 | A | A8, H7, B4 (‹IFSC-B›) | 60m | P0 | SC-13 green against test mode, with one `pout_…` in the Dashboard after the crash drill. If H7 is blocked: the adapter + unit tests land, and the README/demo state the blocker |
 
 
 
@@ -83,7 +85,6 @@
 | ★A15 | README (job, buyer, input, finished result, pass mark, data sources table, how to run, limitations) + Mermaid diagrams exported as images | A | A14 | 40m | P0 | a fresh clone + README steps works |
 | A16 | `report --html` static read-only report (for the video) | A | A5 | 40m | P2 | opens in a browser |
 | A18 | **Organizer I/O adapter**, only if the kickoff kit specifies a format different from INTERFACES §2–3: `io/kit_adapter.py` (kit input → our `Request` + batch) and a `reports/` writer for the kit's output. Internal schemas unchanged | A | A3, A5, kit | 40m | P1 | the kit's sample request runs and its output validates against the kit's format |
-| ★A9 | `payments/razorpayx_test.py` behind `PaymentProvider` (INTERFACES §8): composite `POST /v1/payouts`, derived `X-Payout-Idempotency`, `GET /v1/payouts/{id}`, status mapping, replay window, raw account in memory only; config check (only `fake` / `razorpayx_test`; key must be `rzp_test_`; all 3 env vars present; startup banner; no fallback); ledger rows `razorpayx_test`; unit tests on **recorded** responses; `pytest -m razorpayx` runs SC-13 | A | A8, H7 | 60m | P0 | SC-13 green against test mode, with one `pout_…` in the Dashboard after the crash drill. If H7 is blocked: the adapter + unit tests land, and the README/demo state the blocker |
 | ★H3 | Finance benchmark research: cited outsourced-AP cost per invoice (URL + date) → BUSINESS §2 | H | – | 30m | P0 | every number has a citation |
 | ★H4 | Fill BUSINESS §2 from real `ledger` runs | H | A-S2 | 15m | P0 | no placeholders left |
 | ★H5 | Record the video (DEMO §2), plus a backup take | H | A14 | 40m | P0 | MP4 ≤ 3:30 |
@@ -93,7 +94,7 @@
 
 ## 7. Working rules (all lanes)
 - Trunk-based on `main` after this plan merges. Small commits with a lane prefix (`core:` `io:` `cli:` `payments:` `ledger:` `reports:` / `resolve:` `sources:` / `checks:` `decide:` `exceptions:` `reconciliation:` `scenarios:` / `contract:` `test:` `docs:`).
-- `git pull --rebase` before each push. **No force-push, no history rewrite.** Rebase conflict in another lane's file → stop and tell your human.
+- **Agents commit; only humans push** (or explicitly tell an agent to push). `git pull --rebase` before each push. **No force-push, no history rewrite.** Rebase conflict in another lane's file → stop and tell your human.
 - **Gate before each push:** `pytest -q tests/contract` + your lane's tests.
 - Shared-contract change → entry in `docs/CONTRACT_CHANGES.md` → lane A applies it (`contract:` commit) → the others pull.
 - If a lane finishes early, take a P1 task from another lane only after telling that lane's human. No parallel redesigns.

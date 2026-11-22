@@ -48,13 +48,13 @@ The same type can be HIGH before payment and CRITICAL after (`severity_pre` / `s
 | 22 | Unsupported or missing operation (a "question" request) | request validation | Run-level CANNOT_VERIFY result, exit 0 | INPUT_UNSUPPORTED / LOW | — | `integration/test_unsupported_request.py` |
 | 23 | Provider timeout after create/confirm | exception during call | PAYMENT_UNCERTAIN → reconcile with the **same** key | PROVIDER_OUTCOME_UNKNOWN / HIGH | Reconcile; retry only via a new attempt after a confirmed decline | `crash/test_provider_timeout.py` |
 | 24 | Crash after provider success, before local commit | attempt step=confirm_sent on resume | retrieve → PROVIDER_CONFIRMED; no new call | CRASH_RECOVERY / LOW (audit only) | — | `crash/test_crash_points.py` |
-| 25 | Idempotency window expired (RazorpayX: past `idem_replay_window_h`, since its retention is undocumented), lookup finds nothing | attempt age | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
-| 26 | Provider declines | explicit decline | FAILED → item HELD | PAYMENT_FAILED / MEDIUM | Fresh checks + approval → attempt n+1 | `integration/test_decline_then_retry.py` |
+| 25 | Replay window passed (RazorpayX: past `idem_replay_window_h` = 24 h, set inside the documented 168 h key validity), lookup finds nothing | attempt age | PAYMENT_UNCERTAIN; **never create** | PROVIDER_OUTCOME_UNKNOWN / HIGH | Manual reconcile in the provider dashboard | `crash/test_expired_key_fails_closed.py` |
+| 26 | Provider declines | explicit decline | FAILED → item HELD | PAYMENT_FAILED / MEDIUM | Fresh checks + a new approval (`approval_seq` n+1) → attempt n+1 linked to it | `integration/test_decline_then_retry.py` |
 | 27 | Provider confirmed, no statement yet | three-way | settlement PENDING / NOT_AVAILABLE | SETTLEMENT_UNCONFIRMED / LOW (non-blocking) | Wait for the statement | `unit/reconciliation/test_settlement.py` |
 | 28 | Duplicate debit on the statement | two debits ↔ one payment | Contain | DUPLICATE_DEBIT / CRITICAL + recovery case | Bank/provider investigation | `…::dup_debit` |
 | 29 | Returned / reversed payment | provider or statement status | Payment RETURNED; item back to HELD | PAYMENT_RETURNED / HIGH | New attempt only with fresh approval | `integration/test_returned_payment.py` |
 | 30 | Approval stale (data/policy changed) | decision_hash mismatch | Refuse approval; recompute | STALE_APPROVAL / HIGH | New approval | `integration/test_stale_approval.py` |
-| 31 | Double approve | approval CAS | No-op with "already approved by X" | — | — | `integration/test_approvals.py::double` |
+| 31 | Double approve | approval CAS | No-op with "already approved by X" (a new `approval_seq` is possible only after a provider-confirmed failure, #26/#29) | — | — | `integration/test_approvals.py::double` |
 | 32 | Override of a never-overridable flag | CLI | Refused | — | — | `integration/test_approvals.py::refused` |
 | 33 | Approver not in the allowlist | policy `approvers` | Refused | — | — | `integration/test_approvals.py::allowlist` |
 | 34 | Cost limit reached | BudgetPort.reserve | No more paid calls; the rest are HELD; run STOPPED_COST | RUN_LIMIT_REACHED / MEDIUM | Raise the limit; resume | `integration/test_limits.py::cost` |
@@ -114,7 +114,7 @@ Default tests use the FakeProvider and recorded fixtures/mocks; no external call
 
 | Attempt state on resume | Within `idem_window_h` | After the window |
 |---|---|---|
-| step=CREATE_SENT, no ref | re-send create with the **same** key + identical body → adopt the returned payment (RazorpayX: only within `idem_replay_window_h`) | `find_by_attempt_key` (×2, ~30 s apart). Found → adopt. Not found → **PAYMENT_UNCERTAIN; never create** |
+| step=CREATE_SENT, no ref | re-send create with the **same** key + identical body → adopt the returned payment (RazorpayX: only within `idem_replay_window_h`) | FakeProvider: `find_by_attempt_key` looks in its own store (×2, ~30 s apart); found → adopt. RazorpayX: no search exists, so no call is made. Not found / RazorpayX → **PAYMENT_UNCERTAIN; never create** |
 | step=REF_SAVED | retrieve → `requires_confirmation` → confirm with the same `:confirm` key (RazorpayX: never `requires_confirmation`; retrieve only) | same |
 | step=CONFIRM_SENT | retrieve → SUCCEEDED → PROVIDER_CONFIRMED; DECLINED → FAILED; PROCESSING → stay SUBMITTED, poll with backoff, then leave for the next `resume` (#46) | same |
 | provider unreachable | PAYMENT_UNCERTAIN + exception; never infer from silence | same |

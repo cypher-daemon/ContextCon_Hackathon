@@ -89,7 +89,7 @@
 ### SC-06 Provider timeout → uncertain → reconciled (FakeProvider fault injection)
 | Step | Expected |
 |---|---|
-| FakeProvider **accepts** the confirm, then the response times out (accepted just before we lose contact) | item PAYMENT_UNCERTAIN; exception PROVIDER_OUTCOME_UNKNOWN (HIGH); **no journal payment entry yet** |
+| FakeProvider **accepts** the confirm, then the response times out (accepted just before we lose contact) | item PAYMENT_UNCERTAIN; exception PROVIDER_OUTCOME_UNKNOWN (HIGH); **no journal payment entry yet**; `payment_instructions.csv` row with `status=PAYMENT_UNCERTAIN`, `provider_status=UNKNOWN`, `do_not_execute=TRUE` |
 | `resume` with the provider back | retrieve → SUCCEEDED → PAID; exception RESOLVED with the provider ref as evidence |
 | Variant: idempotency window expired + search empty | stays PAYMENT_UNCERTAIN; **no new create** |
 | Variant: FakeProvider answers `PROCESSING` (acknowledged, not terminal) | payment SUBMITTED, item PAYMENT_IN_PROGRESS, **not PAID**, no payment journal entry; the next `resume` after the fault clears → PAID |
@@ -131,7 +131,7 @@ After SC-01…SC-11, run `audit verify` over every run.
 | Tamper test: edit one journal line's amount in a copy of the DB → `audit verify` exits non-zero and names the entry | `tests/integration/test_audit_verify.py` |
 
 ### SC-13 RazorpayX test-mode vendor payout (opt-in: `--provider razorpayx_test`, needs H7)
-Runs SC-03 INV-201 against RazorpayX Payouts **test mode**: a dummy balance, no real money, no bank settlement. The vendor's bank details are the fictional fixture account; RazorpayX test mode accepts dummy details.
+Runs SC-03 INV-201 against RazorpayX Payouts **test mode**: a dummy balance, no real money, no bank settlement. The vendor's account number is the fictional fixture account. **P0 fixture dependency:** ‹IFSC-B› (V-0003) must be a real public IFSC: 11 characters, `^[A-Z]{4}0[A-Z0-9]{6}$`, and verified live by lane B (task B4) with a 200 from the IFSC API before SC-13 runs. SC-13 is blocked while it is still a placeholder; we don't invent a code or relax validation.
 
 | Step | Expected | Asserted on |
 |---|---|---|
