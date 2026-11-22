@@ -41,7 +41,7 @@ def default_db() -> Path:
 
 
 def connect(db: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5, isolation_level=None)  # we run our own BEGIN
     con.row_factory = sqlite3.Row
     return con
 
@@ -60,6 +60,9 @@ def rows(con, sql, *args):
 def build_state(db: Path, run_id: str | None) -> dict:
     con = connect(db)
     try:
+        # One read transaction = one point-in-time snapshot (WAL). Without it a payment committing between two of the
+        # queries below could show e.g. a confirmed payment with no journal entry. Closing the connection ends it.
+        con.execute("BEGIN")
         runs = rows(con, "SELECT run_id, client_id, operation, status, started_at FROM runs ORDER BY started_at DESC")
         where, args = ("WHERE run_id=?", (run_id,)) if run_id else ("", ())
         items_raw = rows(con, f"SELECT * FROM items {where} ORDER BY run_id, row_no", *args)
