@@ -1,7 +1,5 @@
 from datetime import date
 
-import pytest
-
 from paypilot.checks.runner import run_checks
 from paypilot.core.config import load_config
 from paypilot.policy_config import CheckName
@@ -36,6 +34,12 @@ def test_runner_flags_sc02_out_of_period_and_credit_cases() -> None:
     assert "CREDIT_LINE" in [flag for check in credit for flag in check.flags]
 
 
-def test_runner_fails_closed_when_a_configured_later_check_is_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="configured check 'duplicate'"):
-        run_checks(_line("BL-101", date(2026, 10, 14), "DEBIT"), _resolution(), _ctx(c2_only=False))
+def test_runner_runs_duplicate_and_account_and_skips_non_applicable_checks() -> None:
+    results = run_checks(_line("BL-101", date(2026, 10, 14), "DEBIT"), _resolution(),
+                         _ctx(c2_only=False))
+
+    assert [check.check_id for check in results] == ["required", "period", "posting", "duplicate", "po",
+                                                      "account", "bank"]
+    assert results[3].status == "PASS"
+    assert results[4].status == "SKIPPED"
+    assert results[6].status == "SKIPPED"
