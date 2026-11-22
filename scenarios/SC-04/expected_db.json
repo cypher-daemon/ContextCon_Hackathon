@@ -1,0 +1,18 @@
+{
+  "items": {
+    "count": 3,
+    "by_state": {
+      "HELD": 3
+    }
+  },
+  "payments": 0,
+  "payment_attempts": 0,
+  "journal_entries": 0,
+  "exceptions_by_type_severity": {
+    "BANK_CHANGE_REQUEST/HIGH": 1,
+    "BANK_CHANGE_REQUEST/HIGH:invoice_changed": 1,
+    "VENDOR_CONTAINED/HIGH": 1,
+    "PO_MISMATCH/MEDIUM": 2,
+    "IFSC_INVALID/HIGH": 1
+  }
+}

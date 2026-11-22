@@ -1,0 +1,6 @@
+{
+  "data_policy": "../SC-08/responses.json",
+  "max_cost_inr": 0.5,
+  "expected_first_call_reserved": true,
+  "expected_next_call_stops": true
+}

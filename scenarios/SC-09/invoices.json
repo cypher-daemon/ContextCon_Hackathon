@@ -1,0 +1,26 @@
+[
+  {
+    "invoice_id": "INV-401",
+    "vendor_name": "Gati Express & Supply Chain",
+    "invoice_number": "GATI-2026-881",
+    "invoice_date": "2026-11-08",
+    "amount_inr": "18500.00",
+    "currency": "INR",
+    "remit_bank_account": null,
+    "remit_ifsc": null,
+    "vendor_domain": "gati.com",
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-402",
+    "vendor_name": "Amazon Web Services India Private Limited",
+    "invoice_number": "AWSI-2026-92",
+    "invoice_date": "2026-11-08",
+    "amount_inr": "77000.00",
+    "currency": "INR",
+    "remit_bank_account": null,
+    "remit_ifsc": null,
+    "vendor_domain": "aws.amazon.com",
+    "due_date": "2026-11-30"
+  }
+]

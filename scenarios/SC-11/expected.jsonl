@@ -1,0 +1,1 @@
+{"item_ref":"INV-211","state":"HELD","outcome":"HELD","flags":["DUPLICATE_INVOICE"],"payee":{"vendor_id":"V-0003","legal_name":"Delhivery Limited"},"account":"Freight - carriers","amount_paise":4800000,"currency":"INR","duplicate_of":"INV-201"}

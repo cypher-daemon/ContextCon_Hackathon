@@ -1,0 +1,19 @@
+{
+  "transitions": {
+    "INV-201": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "AWAITING_APPROVAL",
+      "APPROVED",
+      "PAYMENT_IN_PROGRESS",
+      "PAYMENT_UNCERTAIN",
+      "PAID"
+    ]
+  },
+  "exceptions": [
+    "PROVIDER_OUTCOME_UNKNOWN/HIGH"
+  ]
+}

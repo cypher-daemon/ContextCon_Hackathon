@@ -1,0 +1,31 @@
+{
+  "phases": {
+    "after_timeout": {
+      "items": {
+        "by_state": {
+          "PAYMENT_UNCERTAIN": 1
+        }
+      },
+      "payments": 1,
+      "payment_attempts": 1,
+      "journal_entries": 1,
+      "payment_journal_entries": 0,
+      "exception_types": [
+        "PROVIDER_OUTCOME_UNKNOWN"
+      ]
+    },
+    "after_resume": {
+      "items": {
+        "by_state": {
+          "PAID": 1
+        }
+      },
+      "payments": 1,
+      "payment_attempts": 1,
+      "provider_successes": 1,
+      "journal_entries": 2,
+      "trial_balance_sum_paise": 0
+    }
+  },
+  "never_create_new_attempt_for_uncertain_result": true
+}

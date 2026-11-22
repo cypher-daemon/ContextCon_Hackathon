@@ -1,0 +1,7 @@
+{
+  "preconditions": [
+    "SC-03 INV-201 is PAID"
+  ],
+  "different_input_filename": true,
+  "invoice_formats_equivalent": true
+}

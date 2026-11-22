@@ -1,0 +1,38 @@
+[
+  {
+    "line_id": "ST-701",
+    "date": "2026-11-10",
+    "description": "DELHIVERY PAYOUT",
+    "amount_inr": "48000.00",
+    "direction": "DEBIT",
+    "currency": "INR",
+    "bank_reference": "PAY-REF-INV-201"
+  },
+  {
+    "line_id": "ST-702",
+    "date": "2026-11-10",
+    "description": "DELHIVERY PAYOUT DUPLICATE",
+    "amount_inr": "48000.00",
+    "direction": "DEBIT",
+    "currency": "INR",
+    "bank_reference": "PAY-REF-INV-201"
+  },
+  {
+    "line_id": "ST-703",
+    "date": "2026-11-12",
+    "description": "BLUE DART RETURNED",
+    "amount_inr": "22500.00",
+    "direction": "DEBIT",
+    "currency": "INR",
+    "bank_reference": "hist-0091"
+  },
+  {
+    "line_id": "ST-704",
+    "date": "2026-11-14",
+    "description": "UNKNOWN BENEFICIARY",
+    "amount_inr": "999.00",
+    "direction": "DEBIT",
+    "currency": "INR",
+    "bank_reference": "UTR-UNMATCHED"
+  }
+]

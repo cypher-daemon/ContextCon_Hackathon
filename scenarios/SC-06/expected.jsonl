@@ -1,0 +1,1 @@
+{"item_ref":"INV-201","state":"PAID","outcome":"PAID","flags":[],"payee":{"vendor_id":"V-0003","legal_name":"Delhivery Limited"},"account":"Freight - carriers","amount_paise":4800000,"currency":"INR","payment":{"provider":"fake","provider_ref":"PAY-REF-INV-201","status":"PROVIDER_CONFIRMED","settlement_status":"NOT_AVAILABLE"}}

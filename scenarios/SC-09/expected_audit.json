@@ -1,0 +1,21 @@
+{
+  "transitions": {
+    "INV-401": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ],
+    "INV-402": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ]
+  },
+  "run_status": "STOPPED_COST"
+}

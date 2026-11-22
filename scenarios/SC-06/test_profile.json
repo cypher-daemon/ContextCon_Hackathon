@@ -1,0 +1,12 @@
+{
+  "approval": {
+    "by": "Finance Controller",
+    "overrides": []
+  },
+  "fault": "ACCEPT_CONFIRM_THEN_TIMEOUT",
+  "resume": "provider_retrieve_succeeds",
+  "variants": [
+    "EXPIRED_WINDOW_NOT_FOUND_NO_NEW_CREATE",
+    "PROCESSING_STAYS_IN_PROGRESS"
+  ]
+}

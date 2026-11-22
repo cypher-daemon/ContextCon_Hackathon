@@ -1,0 +1,12 @@
+{
+  "run_level_result": {
+    "state": "CANNOT_VERIFY",
+    "flags": [
+      "UNSUPPORTED_REQUEST"
+    ],
+    "missing": [
+      "supported operation"
+    ]
+  },
+  "external_calls": 0
+}

@@ -1,0 +1,9 @@
+{
+  "approval": {
+    "by": "Finance Controller",
+    "overrides": []
+  },
+  "crash_at": "after_create_response_before_ref",
+  "resume_action": "replay_same_attempt_key",
+  "fake_provider_ref": "PAY-REF-INV-201"
+}

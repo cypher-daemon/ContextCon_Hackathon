@@ -1,0 +1,79 @@
+[
+  {
+    "invoice_id": "INV-201",
+    "vendor_name": "Delhivery Limited",
+    "invoice_number": "DLV/2026-27/00418",
+    "invoice_date": "2026-11-03",
+    "amount_inr": "48000.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000003",
+    "remit_ifsc": "‹IFSC-B›",
+    "vendor_domain": "delhivery.com",
+    "po_number": "PO-NB-1042",
+    "qty": 12,
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-202",
+    "vendor_name": "Blue Dart Express Limited",
+    "invoice_number": "BDE-26-27-07781",
+    "invoice_date": "2026-11-04",
+    "amount_inr": "22500.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000004",
+    "remit_ifsc": "‹IFSC-B›",
+    "vendor_domain": "bluedart.com",
+    "po_number": "PO-NB-1045",
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-203",
+    "vendor_name": "VRL Logistics Limited",
+    "invoice_number": "VRL/11/2026/0332",
+    "invoice_date": "2026-11-04",
+    "amount_inr": "64800.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000005",
+    "remit_ifsc": "‹IFSC-C›",
+    "vendor_domain": "vrlgroup.in",
+    "po_number": "PO-NB-1043",
+    "qty": 10,
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-204",
+    "vendor_name": "Delhivery Logistics Pvt",
+    "invoice_number": "DLP-5521",
+    "invoice_date": "2026-11-05",
+    "amount_inr": "31000.00",
+    "currency": "INR",
+    "remit_bank_account": null,
+    "remit_ifsc": null,
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-205",
+    "vendor_name": "Indian Oil Corporation Limited",
+    "invoice_number": null,
+    "invoice_date": "2026-11-05",
+    "amount_inr": "120000.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000006",
+    "remit_ifsc": "‹IFSC-C›",
+    "vendor_domain": "iocl.com",
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-206",
+    "vendor_name": "VRL Logistics Limited",
+    "invoice_number": "VRL/11/2026/0340",
+    "invoice_date": "2026-11-06",
+    "amount_inr": "18000.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000005",
+    "remit_ifsc": "‹IFSC-C›",
+    "vendor_domain": "vrlgroup.in",
+    "qty": 3,
+    "due_date": "2026-11-30"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "request_id": "sc-10-northbay-001",
+  "client_id": "northbay",
+  "instruction": "Is Sharma Traders a registered company?",
+  "period": {
+    "from": "2026-11-01",
+    "to": "2026-11-30"
+  },
+  "inputs": {},
+  "limits": {
+    "max_runtime_seconds": 600,
+    "max_cost_inr": 25.0
+  }
+}

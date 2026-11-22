@@ -1,0 +1,14 @@
+{
+  "transitions": {
+    "INV-211": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ]
+  },
+  "prior_run_duplicate_ref": "invoices.json#INV-201",
+  "new_payment_attempts": 0
+}

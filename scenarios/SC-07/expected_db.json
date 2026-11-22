@@ -1,0 +1,23 @@
+{
+  "items": {
+    "statement_lines": 4
+  },
+  "reconciliation_statuses": {
+    "MATCHED": 1,
+    "CONFLICT": 2,
+    "UNMATCHED": 1
+  },
+  "exceptions_by_type_severity": {
+    "DUPLICATE_DEBIT/CRITICAL": 1,
+    "PAYMENT_RETURNED/CRITICAL": 1,
+    "UNMATCHED_PAYMENT/MEDIUM": 1
+  },
+  "recovery_cases": {
+    "duplicate_debit": 1,
+    "external_returned_history": 0
+  },
+  "vendor_contained": [
+    "V-0003",
+    "V-0004"
+  ]
+}

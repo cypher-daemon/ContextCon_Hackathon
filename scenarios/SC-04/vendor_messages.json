@@ -1,0 +1,11 @@
+[
+  {
+    "message_id": "MSG-301",
+    "received_at": "2026-11-05T10:12:00+05:30",
+    "from_domain": "delhivery.com",
+    "vendor_name": "Delhivery Limited",
+    "kind": "BANK_CHANGE",
+    "new_bank_account": "000000000030",
+    "new_ifsc": "‹IFSC-D›"
+  }
+]

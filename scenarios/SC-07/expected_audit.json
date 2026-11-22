@@ -1,0 +1,13 @@
+{
+  "statement_subjects": {
+    "ST-701": "MATCHED",
+    "ST-702": "CONFLICT",
+    "ST-703": "CONFLICT",
+    "ST-704": "UNMATCHED"
+  },
+  "exception_types": [
+    "DUPLICATE_DEBIT",
+    "PAYMENT_RETURNED",
+    "UNMATCHED_PAYMENT"
+  ]
+}

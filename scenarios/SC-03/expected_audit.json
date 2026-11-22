@@ -1,0 +1,58 @@
+{
+  "transitions": {
+    "INV-201": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "AWAITING_APPROVAL"
+    ],
+    "INV-202": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ],
+    "INV-203": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ],
+    "INV-204": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "CANNOT_VERIFY"
+    ],
+    "INV-205": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "CANNOT_VERIFY"
+    ],
+    "INV-206": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ]
+  },
+  "exception_types": [
+    "ALREADY_PAID",
+    "PO_AMOUNT_MISMATCH",
+    "INPUT_INCOMPLETE",
+    "PO_MISMATCH"
+  ]
+}

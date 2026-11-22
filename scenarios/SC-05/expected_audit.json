@@ -1,0 +1,20 @@
+{
+  "transitions": {
+    "INV-201": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "AWAITING_APPROVAL",
+      "APPROVED",
+      "PAYMENT_IN_PROGRESS",
+      "PAID"
+    ]
+  },
+  "provider_successes_per_payment_key_max": 1,
+  "journal_entries_per_kind": {
+    "INVOICE_ACCRUAL": 1,
+    "INVOICE_PAYMENT": 1
+  }
+}

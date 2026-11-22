@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from paypilot.core.config import load_config
+from paypilot.resolve.normalize import invoice_canonical
 from paypilot.schemas import Outcome, Request
 
 
@@ -106,3 +107,98 @@ def test_sc01_and_sc02_requests_batches_and_expected_outcomes_are_well_formed() 
         assert all(item["outcome"] in {outcome.value for outcome in Outcome} for item in expectations)
         for item in expectations:
             assert (item["outcome"], item["flags"]) == expected_by_ref[item["item_ref"]]
+
+
+def test_sc03_through_sc11_fixtures_match_request_batch_and_manifest_contracts() -> None:
+    scenario_ids = [f"SC-{number:02d}" for number in range(3, 12)]
+    valid_outcomes = {outcome.value for outcome in Outcome}
+    all_invoice_refs: dict[str, set[str]] = {}
+
+    for scenario_id in scenario_ids:
+        scenario = ROOT / "scenarios" / scenario_id
+        request_data = json.loads((scenario / "request.json").read_text(encoding="utf-8"))
+        request = Request.model_validate(request_data)
+        assert request.client_id == "northbay"
+        assert request.operation is not None or scenario_id == "SC-10"
+
+        batch_files = []
+        for input_name in request.inputs.values():
+            batch_path = scenario / input_name
+            assert batch_path.is_file(), f"{scenario_id} references missing input {input_name}"
+            batch = json.loads(batch_path.read_text(encoding="utf-8"))
+            assert isinstance(batch, list)
+            batch_files.append((input_name, batch))
+
+        input_refs: set[str] = set()
+        for input_name, batch in batch_files:
+            for row in batch:
+                ref_key = "invoice_id" if "invoice" in input_name else (
+                    "message_id" if "message" in input_name else "line_id"
+                )
+                ref = row[ref_key]
+                assert ref not in input_refs, f"{scenario_id} repeats {ref} across batch files"
+                input_refs.add(ref)
+                if "amount_inr" in row:
+                    assert isinstance(row["amount_inr"], str), f"{scenario_id}/{ref} money must be decimal text"
+                    assert Decimal(row["amount_inr"]) > 0
+
+        expected_lines = [
+            json.loads(line)
+            for line in (scenario / "expected.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        expected_refs = [item["item_ref"] for item in expected_lines]
+        assert len(expected_refs) == len(set(expected_refs)), f"{scenario_id} has duplicate golden rows"
+        if scenario_id == "SC-10":
+            assert expected_refs == ["RUN"]
+            assert not input_refs
+            assert expected_lines[0]["flags"] == ["UNSUPPORTED_REQUEST"]
+            assert expected_lines[0]["missing"] == ["supported operation"]
+        else:
+            assert set(expected_refs) == input_refs, f"{scenario_id} golden rows do not cover the input items"
+        for item in expected_lines:
+            assert item.get("outcome") in valid_outcomes if "outcome" in item else item.get("status") in {
+                "MATCHED", "POSSIBLE", "CONFLICT", "UNMATCHED", "NOT_AVAILABLE", "PENDING"
+            }
+            assert isinstance(item.get("flags", []), list)
+
+        db_expectation = json.loads((scenario / "expected_db.json").read_text(encoding="utf-8"))
+        audit_expectation = json.loads((scenario / "expected_audit.json").read_text(encoding="utf-8"))
+        assert db_expectation, f"{scenario_id} has an empty DB expectation"
+        assert audit_expectation, f"{scenario_id} has an empty audit expectation"
+        if "transitions" in audit_expectation:
+            assert set(audit_expectation["transitions"]) <= input_refs
+            assert all(states[0] == "NEW" and len(states) >= 2 for states in audit_expectation["transitions"].values())
+
+        assert (scenario / "test_profile.json").is_file()
+        all_invoice_refs[scenario_id] = {
+            ref for input_name, batch in batch_files if "invoice" in input_name for ref in
+            (row["invoice_id"] for row in batch)
+        }
+
+    # SC-11 must exercise a true cross-run duplicate, not an in-batch duplicate.
+    assert "INV-201" in all_invoice_refs["SC-03"]
+    assert "INV-211" in all_invoice_refs["SC-11"]
+    sc11 = json.loads((ROOT / "scenarios" / "SC-11" / "expected.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert sc11["flags"] == ["DUPLICATE_INVOICE"]
+    assert sc11["duplicate_of"] == "INV-201"
+
+
+def test_c9_fixtures_do_not_use_live_provider_credentials_or_real_ifsc_claims() -> None:
+    for number in range(3, 12):
+        scenario = ROOT / "scenarios" / f"SC-{number:02d}"
+        profile = json.loads((scenario / "test_profile.json").read_text(encoding="utf-8"))
+        encoded = json.dumps(profile).lower()
+        assert "rzp_live_" not in encoded
+        assert "rzp_test_" not in encoded
+    sc03 = (ROOT / "scenarios" / "SC-03" / "invoices.json").read_text(encoding="utf-8")
+    assert "‹IFSC-B›" in sc03  # remains an explicitly unverified documentation placeholder
+
+
+def test_sc11_invoice_format_is_canonical_duplicate_of_sc03() -> None:
+    policy = load_config("northbay", root=ROOT)[1].normalize
+    original = json.loads((ROOT / "scenarios" / "SC-03" / "invoices.json").read_text(encoding="utf-8"))[0]
+    resent = json.loads((ROOT / "scenarios" / "SC-11" / "invoices_resent_2026-11-12.json").read_text(encoding="utf-8"))[0]
+
+    assert original["invoice_number"] != resent["invoice_number"]
+    assert invoice_canonical(original["invoice_number"], policy) == invoice_canonical(resent["invoice_number"], policy)

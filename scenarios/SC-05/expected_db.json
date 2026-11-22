@@ -1,0 +1,27 @@
+{
+  "phases": {
+    "after_run_before_approval": {
+      "items": {
+        "by_state": {
+          "AWAITING_APPROVAL": 1
+        }
+      },
+      "payments": 0
+    },
+    "after_crash_resume": {
+      "items": {
+        "by_state": {
+          "PAID": 1
+        }
+      },
+      "payments": 1,
+      "payment_attempts": 1,
+      "provider_successes": 1,
+      "journal_entries": 2,
+      "payment_journal_entries": 1,
+      "trial_balance_sum_paise": 0
+    }
+  },
+  "crash_at": "after_create_response_before_ref",
+  "same_key_replay": true
+}

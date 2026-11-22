@@ -1,0 +1,17 @@
+{
+  "items": {
+    "count": 2,
+    "by_state": {
+      "HELD": 1,
+      "CANNOT_VERIFY": 1
+    }
+  },
+  "payments": 0,
+  "payment_attempts": 0,
+  "journal_entries": 0,
+  "exceptions_by_type_severity": {
+    "IDENTITY_UNRESOLVED/MEDIUM": 1,
+    "IDENTITY_UNVERIFIED/MEDIUM": 1,
+    "LEGAL_ENTITY_MISMATCH/HIGH": 1
+  }
+}

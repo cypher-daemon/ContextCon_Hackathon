@@ -15,6 +15,7 @@ _PRECEDENCE = {
     Proposal.POSTED: 3,
     Proposal.RECONCILED: 4,
 }
+_RESOLVED = {"RESOLVED_VENDOR_MASTER", "RESOLVED_EXACT_IDENTIFIER"}
 
 
 class _FormatValues(dict[str, str]):
@@ -108,7 +109,8 @@ def decide(item: BankLine | Invoice | VendorMessage, resolution: Resolution, che
         canonical = next((check.details.get("invoice_no_canonical") for check in checks
                           if check.details.get("invoice_no_canonical")), None)
     facts = Facts(
-        operation=_operation(item), kind=type(item).__name__, vendor_id=resolution.vendor_id,
+        operation=_operation(item), kind=type(item).__name__,
+        vendor_id=resolution.vendor_id if resolution.status in _RESOLVED else None,
         account_fingerprint=getattr(item, "account_fingerprint", None) or
                             getattr(item, "new_account_fingerprint", None),
         amount_paise=getattr(item, "amount_paise", None), currency=getattr(item, "currency", None),
@@ -121,6 +123,7 @@ def decide(item: BankLine | Invoice | VendorMessage, resolution: Resolution, che
         missing=sorted(missing), evidence_refs=_all_evidence(resolution, checks),
         rule_ids=[rule.id for rule in ordered_rules],
         overridable=sorted(flag for flag in flags if rule_for[flag].overridable), facts=facts,
-        payee_legal_name=resolution.legal_name, account=account, bank_status=bank_status,
+        payee_legal_name=resolution.legal_name if resolution.status in _RESOLVED else None,
+        account=account, bank_status=bank_status,
         decision_hash=make_decision_hash(facts, hash_input),
     )

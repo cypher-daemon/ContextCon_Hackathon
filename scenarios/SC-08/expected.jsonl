@@ -1,0 +1,2 @@
+{"item_ref":"INV-401","state":"HELD","outcome":"HELD","flags":["VENDOR_ONBOARDING_REQUIRED","WEBSITE_IDENTITY_CLAIM_ONLY"],"amount_paise":1850000,"currency":"INR"}
+{"item_ref":"INV-402","state":"CANNOT_VERIFY","outcome":"CANNOT_VERIFY","flags":["PARENT_BRAND"],"amount_paise":7700000,"currency":"INR"}

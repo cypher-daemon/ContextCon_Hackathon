@@ -1,0 +1,16 @@
+{
+  "precondition": "SC-03 INV-201 has been approved and paid",
+  "items": {
+    "count": 1,
+    "by_state": {
+      "HELD": 1
+    }
+  },
+  "payments_before": 1,
+  "payments_after": 1,
+  "payment_attempts_before": 1,
+  "payment_attempts_after": 1,
+  "exceptions_delta": {
+    "DUPLICATE_INVOICE/HIGH": 1
+  }
+}

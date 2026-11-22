@@ -57,15 +57,17 @@ def check_po(item: WorkItem, resolution: Resolution, ctx: StageContext) -> Check
         flags.append("PO_EXHAUSTED")
         reasons.append(f"PO {po.po_number} has only {remaining} paise remaining before this invoice.")
 
-    if item.amount_paise is not None and abs(item.amount_paise - po.amount_paise) > tolerance:
-        difference = item.amount_paise - po.amount_paise
+    # A PO is an authorization ceiling; a smaller invoice is a valid partial
+    # bill. Compare the invoice against the remaining authorized amount.
+    if item.amount_paise is not None and item.amount_paise - remaining > tolerance:
+        difference = item.amount_paise - remaining
         pct = (Decimal(difference) * Decimal(100) / Decimal(po.amount_paise)) if po.amount_paise else Decimal(0)
         flags.append("PO_AMOUNT_MISMATCH")
         reasons.append(f"Invoice differs from PO by {difference} paise ({pct:+.1f}%), beyond tolerance.")
     if po.qty is not None and item.qty is not None:
         qty_tolerance = Decimal(str(po.qty)) * Decimal(str(ctx.policy.po.qty_tolerance_pct)) / Decimal(100)
         qty_difference = Decimal(str(item.qty)) - Decimal(str(po.qty))
-        if abs(qty_difference) > qty_tolerance:
+        if qty_difference > qty_tolerance:
             flags.append("PO_QTY_MISMATCH")
             reasons.append(f"Invoice quantity differs from PO by {qty_difference:+g}, beyond tolerance.")
 

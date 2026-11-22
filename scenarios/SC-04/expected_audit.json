@@ -1,0 +1,39 @@
+{
+  "transitions": {
+    "MSG-301": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ],
+    "INV-302": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ],
+    "INV-303": [
+      "NEW",
+      "PARSED",
+      "RESOLVED",
+      "CHECKED",
+      "DECIDED",
+      "HELD"
+    ]
+  },
+  "containment_order": [
+    "MSG-301",
+    "INV-302"
+  ],
+  "exception_types": [
+    "BANK_CHANGE_REQUEST",
+    "BANK_CHANGED",
+    "VENDOR_CONTAINED",
+    "IFSC_INVALID",
+    "PO_MISMATCH"
+  ]
+}

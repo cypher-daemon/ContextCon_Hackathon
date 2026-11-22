@@ -1,0 +1,39 @@
+{
+  "crustdata": {
+    "gati.com": [
+      {
+        "matches": [
+          {
+            "confidence_score": 0.98,
+            "company_data": {
+              "crustdata_company_id": "CD-GATI-1",
+              "basic_info": {
+                "name": "Gati Limited",
+                "domain": "gati.com"
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "aws.amazon.com": [
+      {
+        "matches": [
+          {
+            "confidence_score": 0.99,
+            "company_data": {
+              "crustdata_company_id": "CD-AWS-1",
+              "basic_info": {
+                "name": "Amazon.com, Inc.",
+                "domain": "aws.amazon.com"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "webfetch": {
+    "https://gati.com/": "<html><footer>Gati Limited CIN: L63000MH1986PLC040506</footer></html>"
+  }
+}

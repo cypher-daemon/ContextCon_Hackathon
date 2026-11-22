@@ -1,0 +1,26 @@
+[
+  {
+    "invoice_id": "INV-302",
+    "vendor_name": "Delhivery Limited",
+    "invoice_number": "DLV/2026-27/00431",
+    "invoice_date": "2026-11-06",
+    "amount_inr": "12000.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000030",
+    "remit_ifsc": "‹IFSC-D›",
+    "vendor_domain": "delhivery.com",
+    "due_date": "2026-11-30"
+  },
+  {
+    "invoice_id": "INV-303",
+    "vendor_name": "Indian Oil Corporation Limited",
+    "invoice_number": "IOC/NB/2026/1189",
+    "invoice_date": "2026-11-07",
+    "amount_inr": "120000.00",
+    "currency": "INR",
+    "remit_bank_account": "000000000006",
+    "remit_ifsc": "‹IFSC-INVALID›",
+    "vendor_domain": "iocl.com",
+    "due_date": "2026-11-30"
+  }
+]

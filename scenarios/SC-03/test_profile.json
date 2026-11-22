@@ -1,0 +1,10 @@
+{
+  "fake_ifsc": {
+    "‹IFSC-B›": "PASS",
+    "‹IFSC-C›": "PASS"
+  },
+  "fake_provider": {
+    "provider_ref": "PAY-REF-INV-201",
+    "terminal_status": "SUCCEEDED"
+  }
+}

@@ -64,3 +64,13 @@ def test_decision_hash_changes_with_policy_input():
     second = decide(_line(), resolution, [], _policy().model_copy(update={"decision_hash_input": "changed"}))
 
     assert first.decision_hash != second.decision_hash
+
+
+def test_lookalike_candidate_is_not_emitted_as_resolved_payee():
+    resolution = Resolution(status="LOOKALIKE", vendor_id="V-0003", legal_name="Delhivery Limited",
+                            candidates=[("V-0003", 0.91)], flags=["LOOKALIKE"])
+
+    result = decide(_line(), resolution, [], _policy())
+
+    assert result.facts.vendor_id is None
+    assert result.payee_legal_name is None

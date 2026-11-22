@@ -72,6 +72,13 @@ def test_amount_tolerance_uses_greater_of_percent_or_absolute():
     assert outside.evidence[0].provider == "purchase_orders"
 
 
+def test_partial_invoice_under_po_ceiling_is_allowed():
+    result = check_po(_invoice(amount_paise=1_800_000, qty=3), _resolved(), _ctx(pos=[_po()]))
+
+    assert result.status == "PASS"
+    assert result.flags == []
+
+
 def test_quantity_mismatch_and_previously_exhausted_po_are_flagged():
     qty_result = check_po(_invoice(amount_paise=6_000_000, qty=12), _resolved(), _ctx(pos=[_po()]))
     exhausted = check_po(_invoice(amount_paise=2_000_000), _resolved(),

@@ -1,0 +1,42 @@
+{
+  "phases": {
+    "run": {
+      "items": {
+        "count": 6,
+        "by_state": {
+          "AWAITING_APPROVAL": 1,
+          "HELD": 3,
+          "CANNOT_VERIFY": 2
+        }
+      },
+      "journal_entries": 0,
+      "approvals": 0,
+      "payments": 0,
+      "payment_attempts": 0,
+      "exceptions_by_type_severity": {
+        "ALREADY_PAID/HIGH": 1,
+        "PO_AMOUNT_MISMATCH/MEDIUM": 1,
+        "INPUT_INCOMPLETE/MEDIUM": 1,
+        "PO_MISMATCH/MEDIUM": 2
+      }
+    },
+    "after_approve_INV-201": {
+      "items": {
+        "by_state": {
+          "PAID": 1,
+          "HELD": 3,
+          "CANNOT_VERIFY": 2
+        }
+      },
+      "journal_entries": 2,
+      "approvals": 1,
+      "payments": 1,
+      "payment_attempts": 1,
+      "payment_successes_by_payment_key": 1,
+      "trial_balance_sum_paise": 0
+    }
+  },
+  "notes": [
+    "Initial expected.jsonl is the run result before human approval. The approval phase is exercised by SC-05."
+  ]
+}

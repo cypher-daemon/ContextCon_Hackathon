@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "request_id": "sc-04-northbay-001",
+  "client_id": "northbay",
+  "instruction": "Review bank change requests and invoice remittance details.",
+  "period": {
+    "from": "2026-11-01",
+    "to": "2026-11-30"
+  },
+  "inputs": {
+    "vendor_messages": "vendor_messages.json",
+    "invoices": "invoices.json"
+  },
+  "limits": {
+    "max_runtime_seconds": 600,
+    "max_cost_inr": 25.0
+  },
+  "operation": "PAY_INVOICES"
+}

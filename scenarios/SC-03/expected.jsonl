@@ -1,0 +1,6 @@
+{"item_ref":"INV-201","state":"AWAITING_APPROVAL","outcome":"AWAITING_APPROVAL","flags":[],"payee":{"vendor_id":"V-0003","legal_name":"Delhivery Limited"},"account":"Freight - carriers","amount_paise":4800000,"currency":"INR"}
+{"item_ref":"INV-202","state":"HELD","outcome":"HELD","flags":["ALREADY_PAID"],"payee":{"vendor_id":"V-0004","legal_name":"Blue Dart Express Limited"},"account":"Freight - carriers","amount_paise":2250000,"currency":"INR","duplicate_of":"HIST-0091"}
+{"item_ref":"INV-203","state":"HELD","outcome":"HELD","flags":["PO_AMOUNT_MISMATCH"],"payee":{"vendor_id":"V-0005","legal_name":"VRL Logistics Limited"},"account":"Freight - carriers","amount_paise":6480000,"currency":"INR","variance_pct":8.0}
+{"item_ref":"INV-204","state":"CANNOT_VERIFY","outcome":"CANNOT_VERIFY","flags":["LOOKALIKE"],"amount_paise":3100000,"currency":"INR","candidates":["V-0003"]}
+{"item_ref":"INV-205","state":"CANNOT_VERIFY","outcome":"CANNOT_VERIFY","flags":["MISSING_FIELD","PO_MISSING"],"payee":{"vendor_id":"V-0006","legal_name":"Indian Oil Corporation Limited"},"account":"Fuel","amount_paise":12000000,"currency":"INR","missing":["invoice_no_raw"]}
+{"item_ref":"INV-206","state":"HELD","outcome":"HELD","flags":["PO_MISSING"],"payee":{"vendor_id":"V-0005","legal_name":"VRL Logistics Limited"},"account":"Freight - carriers","amount_paise":1800000,"currency":"INR"}

@@ -1,0 +1,11 @@
+{
+  "fake_ifsc": {
+    "‹IFSC-D›": "PASS",
+    "‹IFSC-INVALID›": "FAIL"
+  },
+  "expected_call_order": [
+    "MSG-301",
+    "INV-302",
+    "INV-303"
+  ]
+}

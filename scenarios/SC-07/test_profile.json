@@ -1,0 +1,12 @@
+{
+  "preconditions": [
+    "SC-03 INV-201 is PAID with provider_ref PAY-REF-INV-201"
+  ],
+  "history_overrides": [
+    {
+      "ref": "HIST-0091",
+      "status": "RETURNED"
+    }
+  ],
+  "exception_resolution_without_evidence": "REFUSED"
+}

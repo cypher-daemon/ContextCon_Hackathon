@@ -1,0 +1,15 @@
+{
+  "run_status": "STOPPED_COST",
+  "items": {
+    "count": 2,
+    "by_state": {
+      "HELD": 2
+    }
+  },
+  "payments": 0,
+  "cost_ledger": {
+    "first_paid_call": "RESERVED",
+    "blocked_followup": "FAILED_OR_NOT_RESERVED",
+    "no_unaccounted_calls": true
+  }
+}

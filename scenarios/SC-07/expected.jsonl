@@ -1,0 +1,4 @@
+{"item_ref":"ST-701","status":"MATCHED","flags":[],"instruction_ref":"PAY-REF-INV-201"}
+{"item_ref":"ST-702","status":"CONFLICT","flags":["DUPLICATE_DEBIT"],"duplicate_of":"ST-701"}
+{"item_ref":"ST-703","status":"CONFLICT","flags":["RETURNED_PAYMENT"],"history_ref":"HIST-0091"}
+{"item_ref":"ST-704","status":"UNMATCHED","flags":[]}
