@@ -98,3 +98,33 @@ def test_database_is_opened_read_only(db):
     with pytest.raises(sqlite3.OperationalError):
         con.execute("DELETE FROM items")
     con.close()
+
+
+def test_journal_is_scoped_to_the_run_and_carries_its_lines(db):
+    j = dash.build_state(db, "R1")["journal"]
+    assert [e["item_id"] for e in j] == ["held1"]
+    assert [(l["account"], l["debit_paise"], l["credit_paise"]) for l in j[0]["lines"]] == [("Expense", 100, 0), ("Bank", 0, 100)]
+    assert len(dash.build_state(db, None)["journal"]) == 2
+
+
+def test_pages_and_assets_are_served_and_nothing_else(db):
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), dash.make_handler(db))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def status(path):
+        try:
+            return urllib.request.urlopen(base + path).status
+        except urllib.error.HTTPError as e:
+            return e.code
+    try:
+        for ok in ("/", "/payments", "/exceptions", "/approvals", "/books", "/static/app.js", "/static/app.css", "/api/state"):
+            assert status(ok) == 200, ok
+        for bad in ("/static/../dashboard.py", "/static/%2e%2e/dashboard.py", "/etc/passwd", "/nope"):
+            assert status(bad) == 404, bad
+    finally:
+        srv.shutdown(); srv.server_close()
