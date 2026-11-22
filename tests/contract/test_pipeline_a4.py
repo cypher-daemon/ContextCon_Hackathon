@@ -1,5 +1,4 @@
 """A4 done-when: the pipeline runs with stub logic; journal balanced; resume after a crash at any stage converges."""
-import dataclasses
 import os
 import subprocess
 import sys
@@ -11,7 +10,7 @@ from paypilot.core import journal
 from paypilot.core.crash import CRASH_POINTS
 from paypilot.core.db import PersistenceFailure, connect, tx
 from paypilot.core.history import SqliteHistory
-from paypilot.schemas import ClientData, Operation, Payment
+from paypilot.schemas import ClientData
 from tests import pipeline_stubs as st
 from tests.fakes import fixed_clock
 

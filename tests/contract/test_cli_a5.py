@@ -159,3 +159,76 @@ def test_kill_mid_run_then_resume_from_the_cli(world):
     assert {x[0] for x in con.execute("select outcome from items")} == {"POSTED", "CANNOT_VERIFY", "HELD"}
     assert con.execute("select count(*) from journal_entries").fetchone()[0] == 2
     assert (world / "out").exists()
+
+
+def test_ledger_command_and_unknown_price_is_never_shown_as_zero(world):
+    from paypilot.ledger.store import SqliteLedger
+    from paypilot.schemas import LedgerEntry
+    from tests.fakes import fixed_clock
+    r = cli("ledger", "--json")                                                          # no runs yet
+    assert r.exit_code == 2
+    cli("run", "--scenario", str(world / "scenarios/S1"))
+    j = json.loads(cli("ledger", "--json").output)
+    assert (j["cost_status"], j["total_inr"], j["calls"], j["zero_cost_items_pct"]) == ("KNOWN", 0.0, 0, 100.0)
+    con = connect(str(world / "var/paypilot.db")); run_id = j["run_id"]
+    item = con.execute("select item_id from items limit 1").fetchone()[0]
+    led = SqliteLedger(con, fixed_clock)
+    k = led.reserve(LedgerEntry(call_key="x", run_id=run_id, session_id="S", item_id=item, stage="resolve", provider="crustdata",
+                                operation="identify", unit_type="credits", estimated_inr=None, status="RESERVED", request_hash="h", attempt=1,
+                                ts=fixed_clock()))
+    led.confirm(k, 3.0, None, 200, 40)                                                   # 3 credits, price unknown (inr_per_credit: null)
+    led.reserve(LedgerEntry(call_key="y", run_id=run_id, session_id="S", item_id=item, stage="resolve", provider="crustdata",
+                            operation="identify", unit_type="credits", estimated_inr=0.4, status="RESERVED", request_hash="h2", attempt=1,
+                            ts=fixed_clock()))                                          # in flight when the "process died"
+    led.mark_unconfirmed(run_id)
+    j = json.loads(cli("ledger", "--json").output)
+    assert (j["cost_status"], j["total_inr"], j["unconfirmed_inr"], j["calls"]) == ("UNKNOWN", None, 0.4, 2)
+    out = cli("ledger").output
+    assert "UNKNOWN" in out and "₹0.00" not in out.split("Status")[1].split("unconfirmed")[0]
+    assert cli("report").exit_code == 0
+    d = next((world / "out").iterdir())
+    assert "Cost: UNKNOWN" in (d / "report.md").read_text()
+    csv_text = (d / "ledger.csv").read_text()
+    assert "UNKNOWN" in csv_text and "UNCONFIRMED" in csv_text and "CONFIRMED" in csv_text
+
+
+def test_read_commands_on_an_empty_world_are_clean_errors_not_crashes(world):
+    for args in (("report",), ("show", "BL-1"), ("ledger",), ("resume",)):
+        r = cli(*args)
+        assert r.exit_code == 2, (args, r.output)
+        assert "Traceback" not in r.output
+
+
+def test_unbuilt_lane_module_is_a_clean_message_naming_the_lane(capsys):
+    from paypilot.cli import runtime as rt
+    for path, lane in (("checks/zzz", "C"), ("resolve/zzz", "B"), ("sources/zzz", "B"), ("core/zzz", "A")):
+        ns: dict = {}
+        exec(compile("def f():\n    raise NotImplementedError('stub')", f"/x/paypilot/{path}.py", "exec"), ns)
+        with pytest.raises(SystemExit) as e:
+            with rt.guarded():
+                ns["f"]()
+        err = capsys.readouterr().err
+        assert e.value.code == 1 and f"(lane {lane})" in err and f"paypilot.{path.replace('/', '.')}" in err
+        assert "Traceback" not in err and "resume" in err
+
+
+def test_stage_not_built_exits_1_records_it_and_resume_finishes_once_it_is(world, monkeypatch):
+    from paypilot.core import pipeline
+    real = pipeline.decide
+    built = {"yes": False}
+
+    def decide_maybe(item, res, checks, policy):
+        if not built["yes"]:
+            raise NotImplementedError("decide.engine is a stub")
+        return real(item, res, checks, policy)
+    monkeypatch.setattr(pipeline, "decide", decide_maybe)
+    r = cli("run", "--scenario", str(world / "scenarios/S1"))
+    assert r.exit_code == 1 and "not built yet" in (r.stderr or r.output) and "Traceback" not in (r.stderr or "") + r.output
+    con = connect(str(world / "var/paypilot.db"))
+    s = con.execute("select ended_at, exit_code from sessions").fetchone()
+    assert s["ended_at"] is not None and s["exit_code"] == 1                    # not recorded as a clean exit, and not as a crash
+    assert not (world / "out").exists()                                         # no half-baked outputs
+    built["yes"] = True                                                         # the lane lands
+    r = cli("resume")
+    assert r.exit_code == 0 and {x[0] for x in con.execute("select outcome from items")} == {"POSTED", "CANNOT_VERIFY", "HELD"}
+    assert con.execute("select count(*) from journal_entries").fetchone()[0] == 2

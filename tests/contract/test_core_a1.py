@@ -11,7 +11,7 @@ from paypilot.core import ids
 from paypilot.core.audit import append_event
 from paypilot.core.config import ConfigError, load_config, merge_config, with_data_hash
 from paypilot.core.db import PersistenceFailure, connect, tx
-from paypilot.core.lock import LockHeld, RunLock
+from paypilot.core.lock import RunLock
 from paypilot.core.log import JsonlLogger, mask_text
 from paypilot.schemas import Facts, Operation
 

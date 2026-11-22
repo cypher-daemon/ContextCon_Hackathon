@@ -361,4 +361,5 @@ class RunConfig(_M):
     """Merged, validated config for a run. `policy` sections are validated by paypilot.policy_config (C)."""
     limits: dict[str, Any]; payments: dict[str, Any]; approvals: dict[str, Any]; costs: dict[str, Any]
     output: dict[str, Any]; logging: dict[str, Any]; storage: dict[str, Any]
+    sources: dict[str, Any] = {}      # lane B's source settings (retries, rate limits, cache ttl); additive field, read by sources/http.py
     config_hash: str = ""; policy_hash: str = ""

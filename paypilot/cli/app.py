@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import shutil
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -21,10 +22,13 @@ from paypilot.cli import runtime as rt
 from paypilot.cli.selector import resolve_item, resolve_run
 from paypilot.context import StageContext
 from paypilot.core import pipeline
-from paypilot.core.db import connect, tx
+from paypilot.core.db import connect
 from paypilot.core.lock import RunLock
 from paypilot.core.null_ext import NullExtClient
 from paypilot.io import batch
+from paypilot.ledger.budget import Budget, effective_cost_limit, request_limits
+from paypilot.ledger.cache import SqliteCache
+from paypilot.ledger.store import SqliteLedger, summarize
 from paypilot.io.request import load_request
 from paypilot.reports import writer
 from paypilot.reports.writer import fmt_inr, load_views
@@ -36,6 +40,13 @@ _RUN_OPT = typer.Option(None, "--run", help="Run id (default: the most recent ru
 
 
 # ---------------- rendering ----------------
+def _cost_text(c) -> str:
+    """A missing price is UNKNOWN, never ₹0."""
+    if c.cost_status == "UNKNOWN":
+        return "UNKNOWN (call prices missing)"
+    base = f"₹{c.total_inr:.2f}" + (" (at least; some prices unknown)" if c.cost_status == "PARTIAL" else "")
+    return base + (f" + ₹{c.unconfirmed_inr:.2f} unconfirmed" if c.unconfirmed_inr else "")
+
 def render_summary(con, run_id: str, summary: RunSummary, out_dir: Path | None) -> None:
     t = Table(title=f"Run {run_id} · {summary.status}", show_lines=False)
     for col in ("Item", "Outcome", "Payee", "Amount", "Flags"):
@@ -46,7 +57,7 @@ def render_summary(con, run_id: str, summary: RunSummary, out_dir: Path | None) 
                   (d or {}).get("payee_legal_name") or "-", fmt_inr(v.row["amount_paise"]), ", ".join((d or {}).get("flags", [])) or "-")
     console.print(t)
     console.print("Outcomes: " + (", ".join(f"{k} {n}" for k, n in sorted(summary.counts.items())) or "none") +
-                  f" · open exceptions: {sum(summary.open_exceptions.values())} · cost: {summary.cost.cost_status}"
+                  f" · open exceptions: {sum(summary.open_exceptions.values())} · cost: {_cost_text(summary.cost)}"
                   + (" · recovered from a crash" if summary.recovered_from_crash else ""))
     if out_dir:
         console.print(f"Outputs: {out_dir}")
@@ -59,7 +70,21 @@ def _ctx(loaded: rt.Loaded, run_id: str, session_id: str, client_id: str, operat
                         clock=rt.utcnow)
 
 
+def _wire_ext(con, ctx: StageContext):
+    """ExtClient over this run's ledger, cache and budget (lane B's sources/http.py). Until B3 lands it fails closed."""
+    from paypilot.sources.http import make_ext_client
+    ledger = SqliteLedger(con, ctx.clock, run_id=ctx.run_id, session_id=ctx.session_id, costs=ctx.cfg.costs)
+    cache = SqliteCache(con, ctx.clock)
+    budget = Budget(con, ctx.run_id, cfg_limits=ctx.cfg.limits, request_limits=request_limits(con, ctx.run_id),
+                    unknown_reserve_inr=float(ctx.cfg.costs.get("unknown_reserve_inr", 1.0)))
+    try:
+        return make_ext_client(ctx.cfg, ledger, cache, budget)
+    except NotImplementedError:
+        return NullExtClient()
+
+
 def _finish(con, ctx: StageContext, run_id: str) -> RunSummary:
+    ctx = dataclasses.replace(ctx, ext=_wire_ext(con, ctx))
     summary = pipeline.drive(run_id, ctx, provider=None)
     writer.write_run_outputs(con, run_id, ctx.cfg, now=ctx.clock(), session_id=ctx.session_id, operation=ctx.operation)
     return summary
@@ -76,7 +101,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
         provider: Optional[str] = typer.Option(None, "--provider", help="fake | razorpayx_test")) -> None:
     """Run a request. The same request file is the same run (resume semantics)."""
     code = rt.EXIT_OK
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         if (scenario is None) == (request is None):
             raise rt.CliError("give exactly one of --scenario DIR or --request PATH")
@@ -86,7 +111,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
         provider_name = rt.check_provider(provider, loaded.cfg)
         console.print(f"Payment provider: {'FakeProvider (no real money)' if provider_name == 'fake' else 'RazorpayX TEST MODE (no real money)'}")
         with RunLock(loaded.cfg.storage["lock_path"], wait_s=0):
-            con = connect(loaded.cfg.storage["db_path"])
+            con = stack.enter_context(closing(connect(loaded.cfg.storage["db_path"])))
             ctx0 = _ctx(loaded, "", "", req.client_id, req.operation, req.period)
             items = batch.load_items(req, ctx0)
             snapshot = {**loaded.snapshot, "_request": {"period": req.period.model_dump(mode="json", by_alias=True) if req.period else None,
@@ -95,6 +120,7 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
             run_id, created = pipeline.ingest_run(con, request=req, cfg=loaded.cfg, snapshot=snapshot, data_hash=loaded.data_hash,
                                                   items=items, now=rt.utcnow())
             sid = pipeline.open_session(con, run_id, "run", rt.utcnow())
+            code = rt.EXIT_FAILED         # stays 1 if anything below raises; a crash must not be recorded as a clean exit
             try:
                 rt.begin_recovery(con, run_id)
                 ctx = dataclasses.replace(ctx0, run_id=run_id, session_id=sid)
@@ -112,11 +138,11 @@ def run(scenario: Optional[Path] = typer.Option(None, "--scenario", help="Direct
 def resume(run_id: Optional[str] = _RUN_OPT) -> None:
     """Continue a run from its persisted state (after a crash, a stop, or new data)."""
     code = rt.EXIT_OK
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         paths = rt.storage_paths(root)
         with RunLock(paths["lock_path"], wait_s=0):
-            con = connect(paths["db_path"])
+            con = stack.enter_context(closing(connect(paths["db_path"])))
             run_id = resolve_run(con, run_id)
             run = con.execute("SELECT * FROM runs WHERE run_id=?", (run_id,)).fetchone()
             loaded = rt.load_all(run["client_id"], root)
@@ -124,6 +150,7 @@ def resume(run_id: Optional[str] = _RUN_OPT) -> None:
             period = Period(**req["period"]) if req.get("period") else None
             operation = Operation(run["operation"]) if run["operation"] else None
             sid = pipeline.open_session(con, run_id, "resume", rt.utcnow())
+            code = rt.EXIT_FAILED
             try:
                 rt.begin_recovery(con, run_id)
                 summary = _finish(con, _ctx(loaded, run_id, sid, run["client_id"], operation, period), run_id)
@@ -139,10 +166,10 @@ def report(run_id: Optional[str] = _RUN_OPT,
            as_json: bool = typer.Option(False, "--json", help="Print the run summary as JSON."),
            out: Optional[Path] = typer.Option(None, "--out", help="Write the output files here instead of out/<run_id>/.")) -> None:
     """Regenerate every output file for a run from the database, and show the summary."""
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
         paths = rt.storage_paths(root)
-        con = connect(paths["db_path"], apply_schema=False)
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
         run_id = resolve_run(con, run_id)
         client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
         cfg, _, _ = rt.load_cfg(client_id, root)
@@ -166,9 +193,9 @@ def _j(text):
 def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoice_id / line_id / message_id in the run."),
          run_id: Optional[str] = _RUN_OPT) -> None:
     """Why this item got its outcome: decision, rules, flags, checks, evidence, audit timeline, exceptions, payment."""
-    with rt.guarded():
+    with rt.guarded() as stack:
         root = rt.start()
-        con = connect(rt.storage_paths(root)["db_path"], apply_schema=False)
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
         run_id = resolve_run(con, run_id)
         row = resolve_item(con, run_id, item)
         d, res, checks = _j(row["decision_json"]), _j(row["resolution_json"]), _j(row["checks_json"]) or []
@@ -221,3 +248,30 @@ def show(item: str = typer.Argument(..., help="Exact item_id, or a unique invoic
             console.print(f"[bold]Payment[/bold] {pay['payment_key']} {pay['status']} settlement {pay['settlement_status']} via {pay['provider']}")
             for a in con.execute("SELECT * FROM payment_attempts WHERE payment_id=? ORDER BY attempt_no", (pay["payment_id"],)):
                 console.print(f"  attempt {a['attempt_no']} {a['attempt_key']} step {a['step']} outcome {a['outcome']} ref {a['provider_ref'] or '-'}")
+
+
+@app.command()
+def ledger(run_id: Optional[str] = _RUN_OPT, as_json: bool = typer.Option(False, "--json", help="Print the ledger summary as JSON.")) -> None:
+    """Every external call and what it cost: KNOWN / PARTIAL / UNKNOWN, ₹ per item, cache hits, UNCONFIRMED calls."""
+    with rt.guarded() as stack:
+        root = rt.start()
+        con = stack.enter_context(closing(rt.open_existing_db(root)))
+        run_id = resolve_run(con, run_id)
+        client_id = con.execute("SELECT client_id FROM runs WHERE run_id=?", (run_id,)).fetchone()["client_id"]
+        cfg, _, _ = rt.load_cfg(client_id, root)
+        s = summarize(con, run_id, limit_inr=effective_cost_limit(con, run_id, cfg.limits),
+                      unknown_reserve_inr=float(cfg.costs.get("unknown_reserve_inr", 1.0)))
+        if as_json:
+            print(s.model_dump_json(indent=2))
+            return
+        t = Table(title=f"Cost ledger · run {run_id}")
+        for c in ("Provider", "₹ spent"):
+            t.add_column(c)
+        for prov, v in s.by_provider.items():
+            t.add_row(prov, "UNKNOWN" if v is None else f"₹{v:.2f}")
+        console.print(t)
+        console.print(f"Status {s.cost_status} · total {'UNKNOWN' if s.total_inr is None else f'₹{s.total_inr:.2f}'} · unconfirmed ₹{s.unconfirmed_inr:.2f}"
+                      f" · limit {'none' if not s.limit_inr else f'₹{s.limit_inr:.2f}'}")
+        console.print(f"Calls {s.calls} · cache hits {s.cache_hits} · items {s.items} ({s.finished_items} finished) · "
+                      f"₹/item {'UNKNOWN' if s.inr_per_item is None else f'{s.inr_per_item:.2f}'} · worst item "
+                      f"{'UNKNOWN' if s.worst_item_inr is None else f'₹{s.worst_item_inr:.2f}'} · resolved at ₹0: {s.zero_cost_items_pct:.0f}%")

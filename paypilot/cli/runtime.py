@@ -12,7 +12,8 @@ from typing import Iterator
 
 from paypilot.core import crash
 from paypilot.core.config import ConfigError, load_config, with_data_hash
-from paypilot.core.db import PersistenceFailure, tx
+from paypilot.core.db import PersistenceFailure
+from paypilot.ledger.store import SqliteLedger
 from paypilot.core.env import load_dotenv
 from paypilot.core.lock import LockHeld
 from paypilot.io.client_data import ClientDataError, load_client_data
@@ -22,7 +23,7 @@ from paypilot.policy_config import PolicyConfig
 from paypilot.reports.writer import UnknownOutputField
 from paypilot.schemas import ClientData, RunConfig
 
-EXIT_OK, EXIT_INVALID, EXIT_LOCK, EXIT_PERSIST, EXIT_LIMIT = 0, 2, 3, 70, 75
+EXIT_OK, EXIT_FAILED, EXIT_INVALID, EXIT_LOCK, EXIT_PERSIST, EXIT_LIMIT = 0, 1, 2, 3, 70, 75
 PROVIDERS = ("fake", "razorpayx_test")
 
 
@@ -38,20 +39,42 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+_LANES = {"resolve": "B", "sources": "B", "checks": "C", "decide": "C", "exceptions": "C", "reconciliation": "C",
+          "flags": "C", "policy_config": "C"}
+
+
+def _unbuilt_module(tb) -> tuple[str, str]:
+    """(module, lane) of the innermost paypilot frame, so the message names what is not built yet."""
+    import traceback
+    mod = "paypilot"
+    for f in traceback.extract_tb(tb):
+        if f.filename.replace("\\", "/").find("/paypilot/") >= 0:
+            mod = f.filename.replace("\\", "/").split("/paypilot/")[-1].removesuffix(".py").replace("/", ".")
+    return "paypilot." + mod, _LANES.get(mod.split(".")[0], "A")
+
+
 @contextlib.contextmanager
-def guarded() -> Iterator[None]:
-    """Map domain errors to the documented exit codes; nothing here ever hides a failure."""
-    try:
-        yield
-    except (CliError, ConfigError, RequestError, ClientDataError, SelectorError, UnknownOutputField, ValueError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_INVALID)
-    except LockHeld as e:
-        print(f"error: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_LOCK)
-    except PersistenceFailure as e:
-        print(f"error: persistence failure, stopped before any provider call: {e}", file=sys.stderr)
-        raise SystemExit(EXIT_PERSIST)
+def guarded() -> Iterator[contextlib.ExitStack]:
+    """Map domain errors to the documented exit codes; nothing here ever hides a failure.
+    Yields an ExitStack: register database connections on it and they are closed however the command ends."""
+    with contextlib.ExitStack() as stack:
+        try:
+            yield stack
+        except (CliError, ConfigError, RequestError, ClientDataError, SelectorError, UnknownOutputField, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_INVALID)
+        except NotImplementedError as e:        # a lane's module is still a stub: say which one, not a traceback
+            module, lane = _unbuilt_module(e.__traceback__)
+            print(f"error: not built yet: {module} (lane {lane}): {e or 'NotImplementedError'}\n"
+                  f"       nothing was lost: the run is saved and `python -m paypilot resume` continues it once the module lands.",
+                  file=sys.stderr)
+            raise SystemExit(EXIT_FAILED)
+        except LockHeld as e:
+            print(f"error: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_LOCK)
+        except PersistenceFailure as e:
+            print(f"error: persistence failure, stopped before any provider call: {e}", file=sys.stderr)
+            raise SystemExit(EXIT_PERSIST)
 
 
 def start() -> Path:
@@ -112,8 +135,7 @@ def begin_recovery(con: sqlite3.Connection, run_id: str) -> None:
     """Resume protocol steps 3-4 (FAILURE_MODES §3). RESERVED ledger rows -> UNCONFIRMED (they still count against the budget).
     Open payments are reconciled with the provider BEFORE any new work; payments land in A8, so until then any existing
     payment row fails loudly instead of being ignored."""
-    with tx(con):
-        con.execute("UPDATE cost_ledger SET status='UNCONFIRMED' WHERE run_id=? AND status='RESERVED'", (run_id,))
+    SqliteLedger(con, utcnow).mark_unconfirmed(run_id)
     if con.execute("SELECT COUNT(*) FROM payments p JOIN items i ON i.item_id=p.item_id WHERE i.run_id=?", (run_id,)).fetchone()[0]:
         raise NotImplementedError("open payments must be reconciled first (payments.reconcile, task A8)")
 
@@ -125,3 +147,15 @@ def storage_paths(root: Path) -> dict[str, str]:
     if not st.get("db_path") or not st.get("lock_path"):
         raise CliError("config.yaml storage.db_path / storage.lock_path are required")
     return {k: v if os.path.isabs(v) else str(root / v) for k, v in st.items()}
+
+
+def open_existing_db(root: Path):
+    """Read-side commands (report/show/ledger): a missing or empty database is a clean 'nothing to show', not a crash."""
+    from paypilot.core.db import connect
+    db = storage_paths(root)["db_path"]
+    if not Path(db).exists():
+        raise CliError("no database yet: run a request first (python -m paypilot run --scenario DIR)")
+    con = connect(db, apply_schema=False)
+    if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone() is None:
+        raise CliError("the database has no runs yet: run a request first")
+    return con
