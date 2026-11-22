@@ -1,0 +1,63 @@
+# PayPilot product defaults (INTERFACES §7). Sections marked [policy] may be overridden in clients/<id>/policy.yaml.
+# ===== owner A: runtime =====
+limits: {max_runtime_seconds: 600, max_cost_inr: 25.0, max_cost_inr_per_item: 5.0, call_timeout_s: 20}  # request limits: the stricter wins
+payments: {provider: fake, currency: INR, idem_window_h: 23,         # provider ∈ fake | razorpayx_test (no live option exists)
+           refuse_live_keys: true, approve_executes_inline: true,
+           razorpayx_test: {base_url: https://api.razorpay.com/v1, mode: IMPS, purpose: vendor bill,
+                            idem_replay_window_h: 24, call_timeout_s: 20}}
+  # .env (never committed): RAZORPAYX_KEY_ID (must start rzp_test_), RAZORPAYX_KEY_SECRET, RAZORPAYX_ACCOUNT_NUMBER (test-mode Customer Identifier)
+  # idem_replay_window_h: a 7-day (168 h) RazorpayX key validity is claimed but UNVERIFIED (official source not yet checked; DECISIONS §3).
+  # We replay only within 24 h: that covers the one-day event with a wide margin. Past it → PAYMENT_UNCERTAIN, never a new create.
+approvals: {approvers: [], lock_wait_s: 10}               # [] = any name (declared identity); policy.yaml sets the allowlist
+costs:
+  crustdata: {inr_per_credit: null, estimates: {identify: 0.2, web_fetch: 1}}
+  infra_inr_per_item: null
+  unknown_reserve_inr: 1.0                                # budget reservation when the price is unknown; reported cost stays UNKNOWN
+output:
+  dir: out/{run_id}/
+  fields: [run_id, item_id, source_ref, operation, outcome, payee, account, amount_paise, currency,
+           flags, reasons, bank_status, exception_ids, payment, cost_inr, sources]     # a new field = one line here
+logging: {dir: var/logs, mask_accounts: true}
+storage: {db_path: var/paypilot.db, lock_path: var/paypilot.lock, fake_provider_db: var/fake_provider.db}
+# ===== owner B: identity & evidence =====
+sources:
+  ifsc: {enabled: true, base_url: https://ifsc.razorpay.com, retries: 2, backoff_base_s: 0.5, cache_ttl_h: 720}   # optional check; disabled → ifsc_valid = NOT_CHECKED
+  crustdata: {base_url: https://api.crustdata.com, api_version: "2025-11-01", retries: 3, backoff_base_s: 1.0,
+              rate_per_min: {identify: 30, web_fetch: 10}, identify_by: domain, cache_ttl_h: 168, enabled: true}
+  webfetch: {paths: ["/", "/contact-us", "/about-us"], skip_domains: [zaubacorp.com, filesure.in],
+             cf_markers: ["Just a moment", "cf-chl"], passage_window: 200, cache_ttl_h: 24, enabled: true}
+normalize:                                                # [policy]
+  processor_prefixes: ['^RAZ\*', '^PAYTM\*', '^NEFT[-/ ]', '^IMPS[-/ ]', '^UPI[-/ ]', '^POS ', '^ACH ', '^BIL/']
+  city_tokens: [BLR, BANGALORE, BENGALURU, MUM, MUMBAI, DEL, DELHI, GGN, GURGAON, CHN, CHENNAI, HYD, PUNE, KOL]
+  legal_suffixes: [PVT, PRIVATE, LTD, LIMITED, LLP, INC, SARL, GMBH, CO]
+  abbreviations: {TRD: TRADERS, LOGS: LOGISTICS, SVCS: SERVICES}
+  invoice_noise_tokens: [INV, INVOICE, BILL, NO, NUM]
+match: {fuzzy_min_score: 92, fuzzy_min_margin: 5, lookalike_floor: 75, aliases_extra: {}}   # [policy]
+# ===== owner C: checks, decisions, exceptions =====
+required_fields:                                          # [policy]
+  BankLine: {POST_BANK_LINES: [date, descriptor_raw, amount_paise, direction]}
+  Invoice:  {PAY_INVOICES: [vendor_name_raw, invoice_no_raw, invoice_date, amount_paise]}
+checks_order: [required, period, duplicate, po, account, bank]   # [policy]
+period: {enforce: true}                                   # [policy]
+posting: {allowed_directions: [DEBIT], allowed_currencies: [INR]}   # [policy]
+duplicate: {window_days: 3, compare_against: [this_run, db_history, payment_history]}     # [policy]
+po: {required_for: [PAY_INVOICES], tolerance_pct: 1.0, tolerance_abs_paise: 10000, qty_tolerance_pct: 0}   # [policy]
+bank: {verify_master_ifsc_before_pay: true}               # [policy]
+accounts: {by_category: {}}                               # [policy]; policy.yaml / chart_of_accounts fills it
+reconcile: {window_days: 3, amount_tolerance_paise: 0, settlement_pending_days: 2}   # [policy]
+decision:                                                 # [policy]; every Flag except PERSISTENCE_FAILURE (fail-closed exit, never decided) must be covered by exactly one rule (validated at load)
+  rules:
+    - {id: R01, flags_any: [PAYEE_UNRESOLVED], proposal: CANNOT_VERIFY, reason: "No source identifies the payee for '{descriptor}'", missing: "vendor-master record or a GSTIN/domain"}
+    - {id: R02, flags_any: [PAYEE_TIE, LOOKALIKE], proposal: CANNOT_VERIFY, reason: "Payee identity ambiguous: {candidates}"}
+    - {id: R03, flags_any: [PARENT_BRAND], proposal: CANNOT_VERIFY, reason: "Source resolves to {found_entity}, not billed entity {billed_entity}"}
+    - {id: R04, flags_any: [MISSING_FIELD, PARSE_FAILED, UNSUPPORTED_REQUEST], proposal: CANNOT_VERIFY, reason: "Required input missing or unreadable: {fields}", missing: "{fields}"}
+    - {id: R10, flags_any: [DUPLICATE_INVOICE, ALREADY_PAID, DUPLICATE_PAYMENT], proposal: HELD, reason: "Already seen/paid as {dup_ref}"}
+    - {id: R11, flags_any: [DUPLICATE_TRANSACTION], proposal: HELD, reason: "Possible duplicate of {dup_ref}", overridable: true}
+    - {id: R12, flags_any: [BANK_CHANGED, BANK_CHANGE_REQUEST, IFSC_INVALID], proposal: HELD, reason: "Bank details differ or are invalid ({detail}); vendor master must be updated through the client's verification process"}
+    - {id: R13, flags_any: [PO_MISSING, PO_NOT_FOUND, PO_VENDOR_MISMATCH, PO_AMOUNT_MISMATCH, PO_QTY_MISMATCH, PO_EXHAUSTED], proposal: HELD, reason: "PO check: {po_detail}", overridable: true}
+    - {id: R14, flags_any: [FUZZY_MATCH, ACCOUNT_UNMAPPED], proposal: HELD, reason: "{detail}; confirm", overridable: true}
+    - {id: R15, flags_any: [VENDOR_ONBOARDING_REQUIRED, WEBSITE_IDENTITY_CLAIM_ONLY, VENDOR_MASTER_CONFLICT], proposal: HELD, reason: "{detail}; vendor onboarding / master clean-up required"}
+    - {id: R16, flags_any: [OUT_OF_PERIOD, CREDIT_LINE, UNSUPPORTED_CURRENCY, NON_POSITIVE_AMOUNT], proposal: HELD, reason: "{detail}", overridable: true}
+    - {id: R17, flags_any: [SOURCE_UNAVAILABLE, CREDITS_EXHAUSTED, PROVIDER_TIMEOUT, COST_LIMIT, TIME_LIMIT], proposal: HELD, reason: "{provider} unavailable or run limit reached; not guessing"}
+    - {id: R18, flags_any: [PAYMENT_UNCERTAIN, WRONG_PAYEE_SUSPECTED, AMOUNT_MISMATCH, SETTLEMENT_MISMATCH, DUPLICATE_DEBIT, RETURNED_PAYMENT, REVERSED_PAYMENT, STALE_APPROVAL, VENDOR_CONTAINED], proposal: HELD, reason: "Payment exception: {detail}"}
+exceptions: {map: {}}                                     # [policy]; flag → {type, severity_pre, severity_post, blocking, recovery_case}; values in FAILURE_MODES.md §2

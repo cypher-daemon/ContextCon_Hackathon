@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paypilot"
+version = "0.1.0"
+description = "PayPilot: accounts-payable operations that pay at most once and never guess a payee."
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.6",
+  "pyyaml>=6.0",
+  "httpx>=0.27",
+  "rapidfuzz>=3.6",
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["paypilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "razorpayx: runs against RazorpayX test mode (needs rzp_test_ keys in .env)",
+  "crash: kill/crash-recovery tests",
+]
