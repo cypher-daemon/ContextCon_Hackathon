@@ -1,61 +1,65 @@
-# AGENTS.md: rules for the Codex agent (decision-logic lane)
+# AGENTS.md: rules for Codex (lanes B and C)
 
-Read `HACKATHON_INFORMATION.md` (Part A is binding), then `PLAN.md` (the final implementation spec), then `TASKS.md` (your tasks are the `X**` ids). `plan/PayPilot_Unified_Architecture_and_Build_Plan.md` is design background.
-If they conflict, the order is: Part A > kickoff kit > PLAN.md > unified plan.
+**Read first:**
+1. `HACKATHON_INFORMATION.md` Part A (binding rules)
+2. `docs/ARCHITECTURE.md`
+3. `docs/INTERFACES.md` (the frozen contract)
+4. `docs/FAILURE_MODES.md`
+5. `docs/SCENARIOS.md`
+6. `docs/TASKS.md` (your tasks are `B*` or `C*`)
 
-## Your lane: decision logic
-You write **pure functions** that turn inputs + `StageContext` into `Request`, `ParsedItem`, `Resolution`, `CheckResult`, `Decision`, and rendered output.
+`docs/archive/` is history only; do not follow it.
 
-**You may edit only:**
-- `apsvc/flags.py`, `apsvc/policy_config.py`
-- `apsvc/kitio/**`, `apsvc/ingest/**`, `apsvc/checks/**`, `apsvc/decide/**`
-- `apsvc/resolve/normalize.py`, `apsvc/resolve/matcher.py`, `apsvc/resolve/crustdata.py`, `apsvc/resolve/webfetch.py`, `apsvc/resolve/ifsc.py`
-- `tests/unit/**`, `tests/fixtures/hard_cases/**`, `tests/golden/hard_*.jsonl`, `data/**`
-- `docs/finance.md`, `docs/ethics.md`
-- `config.yaml`: **only** the sections under `# ---------- owner: codex ----------`
-- `docs/CONTRACT_CHANGES.md`: append-only
+Your human tells you which lane this session is: **B** (identity & evidence) or **C** (policy, exceptions, scenarios). Claude is lane **A** (runtime) and works in parallel.
+
+## What you may edit
+| Lane | Paths | `config.yaml` sections |
+|---|---|---|
+| B | `paypilot/resolve/`, `paypilot/sources/`, `tests/unit/resolve/`, `tests/unit/sources/` | `sources normalize match` |
+| C | `paypilot/flags.py`, `paypilot/policy_config.py`, `paypilot/checks/`, `paypilot/decide/`, `paypilot/exceptions/`, `paypilot/reconciliation/`, `clients/`, `scenarios/`, `tests/unit/{checks,decide,exceptions,reconciliation,io}/` | `required_fields checks_order period posting duplicate po bank accounts reconcile decision exceptions` |
 
 **Never edit:**
-- `apsvc/schemas.py`, `apsvc/context.py`, `db/schema.sql`, `pyproject.toml`
-- `apsvc/core/**`, `apsvc/pay/**`, `apsvc/cli/**`, `apsvc/resolve/http.py`
-- `tests/contract/**`, `tests/integration/**`, `tests/kill/**`, `tests/fakes.py`
-- Claude's config sections
-- `PLAN.md`, `TASKS.md`, `AGENTS.md`, `CLAUDE.md`
+- `schemas.py`, `context.py`, `db/`, `pyproject.toml`
+- `paypilot/{core,io,cli,approvals,payments,ledger,reports}/`
+- `tests/{contract,integration,crash}/`, `tests/fakes.py`
+- lane A's config sections, `README.md`
+- `docs/` (except appending to `docs/CONTRACT_CHANGES.md`)
 
-If you need a change there, append a request to `docs/CONTRACT_CHANGES.md` (what, why, exact signature) and tell your person.
+Need a contract change? Append to `docs/CONTRACT_CHANGES.md` and tell your human.
 
-## Hard rules for your code
-1. **No side effects:**
-   - Do not import `sqlite3`, `httpx`, `requests`, `stripe` or `anthropic`.
-   - All network access goes through `ctx.ext` (`get_json`, `post_json`, `fetch_page`, `llm_extract`); all history reads go through `ctx.history`.
-   - Do not write files, except in `kitio.adapter.write_results`.
-2. **Deterministic:** the same inputs + config give the same output. No randomness, no wall-clock reads except `ctx.clock()`, no LLM in any decision.
+## Hard rules
+1. **Pure code:**
+   - No `sqlite3`, `stripe` or `anthropic` imports.
+   - Network only via `ctx.ext`; only `sources/http.py` (lane B) may import `httpx`.
+   - History only via `ctx.history`.
+   - Return drafts (`ExceptionDraft`, `Decision`, …); lane A persists them.
+2. **Deterministic:** no randomness. Time only via `ctx.clock()`. No LLM in any decision.
 3. **Never guess:**
-   - Ties, lookalikes, parent brands and unknowns → CANNOT_VERIFY.
-   - An `ext` error (`ok=False`) is never a pass; it becomes `SOURCE_UNAVAILABLE` / `CREDITS_EXHAUSTED` / `COST_LIMIT`.
-   - A fuzzy match is HOLD at most.
-4. **Every fact has a `Source`** with `field_or_passage`, `record_date`, `record_date_basis` and `retrieved_at`.
-   - Website text is `source_type="company_website_claim"`, and the value must appear in the passage.
-   - The HTTP `Date` header is never a `record_date`.
-5. **Crustdata:** identify **by domain only**. Never by name. Never call it when no domain is known.
-6. **Config, not constants:** every threshold, token list, mapping, rule and output field comes from `config.yaml`, through `policy_config.py` models with `extra="forbid"`.
-7. **Do not weaken:**
-   - `NEVER_OVERRIDABLE` (you may only add to it).
-   - CANNOT_VERIFY > HOLD severity.
-   - "IFSC ≠ ownership" (`ownership_verified` is always `NOT_VERIFIED`).
-   - The rule that PAY requires an invoice number.
-8. Money is integer paise. Display ₹ only in kitio/render.
+   - Tie, lookalike, parent brand, unknown → CANNOT_VERIFY.
+   - Fuzzy → HELD at most.
+   - `ExtResponse.ok == False` is never a PASS.
+   - A missing optional file → SKIPPED with a reason.
+4. **Every fact is a `Source`** with `field_or_passage`, `record_date`, `record_date_basis`, `retrieved_at`.
+   - Website text = `company_website_claim` (self-published), and the value must appear in the passage.
+   - The HTTP Date header is never a `record_date`.
+5. **Crustdata by domain only**, and only when a domain is known. Never by name.
+6. **Don't weaken:**
+   - `NEVER_OVERRIDABLE` (add only).
+   - `CANNOT_VERIFY > HELD` precedence.
+   - `ownership_verified` is always `NOT_VERIFIED`.
+   - PAY requires an invoice number.
+   - `decision_hash` excludes timestamps, source ids and non-policy config.
+7. **Fixtures:** never invent CIN/GSTIN for real companies. Bank accounts are fictional. IFSC codes only as verified live by lane B. No personal data.
+8. Money is integer paise; ₹ appears only in reports.
 
 ## Workflow
-- Pull with `git pull --rebase` before starting each task and before each push. Make small commits with a prefix: `kitio:`, `ingest:`, `resolve:`, `checks:`, `decide:`, `test:`, `docs:`. **No force-push. No history rewrites.**
-- Before each push: `pytest -q tests/contract tests/unit` must pass.
-- Unit tests use only `tests/fakes.py` (`FakeExtClient`, `FakeHistory`, `make_ctx`). Never hit the network in a unit test.
-- If a rebase conflicts in a file you don't own, stop and tell your person.
-- Mark a task done in your commit message with its `X**` id.
+- `git pull --rebase` before every task and push. Small commits with your lane prefix (`resolve:` `sources:` / `checks:` `decide:` `exceptions:` `reconciliation:` `scenarios:` / `test:`). Put the task id in the message. **No force-push.**
+- **Gate before each push:** `pytest -q tests/contract tests/unit`.
+- Unit tests use `tests/fakes.py` only. No network in unit tests.
+- A rebase conflict in a file you don't own → stop and tell your human.
 
-## Commands
 ```bash
-uv sync                                   # or: pip install -e .[dev]
-pytest -q tests/contract tests/unit       # your gate
-python -m apsvc run --request tests/fixtures/official/official_oct.json --provider fake
+pip install -e ".[dev]"
+pytest -q tests/contract tests/unit
+python -m paypilot run --scenario scenarios/SC-01 --provider fake
 ```

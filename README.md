@@ -1,0 +1,44 @@
+# PayPilot
+
+**Accounts-payable operations for mid-size Indian logistics companies: pay every invoice at most once, never guess a payee, and manage every financial exception until it is resolved.**
+ContextCon 05 · BITS Pilani · Track: Buying & Paying
+
+> **Status: planning phase.** The design is final; implementation follows [`docs/TASKS.md`](docs/TASKS.md). Commands below are the target interface.
+
+## The job and who pays
+Payables teams and outsourced AP firms are paid to match bank lines and invoices to vendors, catch duplicates and bank-detail fraud, get approvals, pay, and chase errors. PayPilot does that job for the **finance controller of a mid-size 3PL**, or for an **outsourced AP firm** serving many of them.
+
+## Input → finished result
+- **Input:** a request (`POST_BANK_LINES`, `PAY_INVOICES` or `RECONCILE`) plus a batch file, checked against the client's own records: vendor master (source of truth), POs, payment history, chart of accounts.
+- **Finished result:** every item is `POSTED`, `PAID` (Stripe test mode, after human approval), `HELD` (with reasons), `CANNOT_VERIFY` (what is missing is named), `REJECTED`, or `PAYMENT_UNCERTAIN` (stop and reconcile). Every blocking problem is a tracked exception, and wrong payments open a recovery case. Every fact cites its source; every external call is in the cost ledger.
+- **Pass mark:** every scenario in [`docs/SCENARIOS.md`](docs/SCENARIOS.md) matches its expected outcome; 30 random `kill -9`s produce at most one successful payment per invoice; every output fact has a source.
+
+## Quick start (target)
+```bash
+pip install -e ".[dev]" && cp .env.example .env    # add sk_test_ key + BANK_HMAC_KEY
+python -m paypilot run --scenario scenarios/SC-01 --provider fake   # month-end bank posting
+python -m paypilot run --scenario scenarios/SC-03                    # invoices → approval queue
+python -m paypilot approvals
+python -m paypilot approve <ITEM_ID> --by "Finance Controller"
+python -m paypilot resume                                             # after any crash
+python -m paypilot show <ITEM_ID>    # decision → rule → flag → check → evidence → source
+python -m paypilot exceptions --open
+python -m paypilot ledger            # ₹ per item, measured
+```
+
+## Documentation
+| Doc | What's in it |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design: context, components, lifecycle, exactly-once, state machines, data model, evidence, exceptions, decisions considered, scaling |
+| [`docs/INTERFACES.md`](docs/INTERFACES.md) | Exact contracts: I/O formats, models, IDs, DB schema, config, ports, CLI |
+| [`docs/FAILURE_MODES.md`](docs/FAILURE_MODES.md) | 44 failure modes, crash points, resume protocol, reconciliation, recovery |
+| [`docs/SCENARIOS.md`](docs/SCENARIOS.md) | The demo world (fictional client, real vendors) and expected outcomes |
+| [`docs/DEMO.md`](docs/DEMO.md) | Video storyboard, live demo, judge Q&A |
+| [`docs/BUSINESS.md`](docs/BUSINESS.md) | Buyer, measured unit economics, ethics, data sources |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) · [`docs/TASKS.md`](docs/TASKS.md) | Decision log, open questions · build plan by lane |
+
+## Data sources called
+Client records (₹0) · Razorpay IFSC API (free; bank/branch only) · Crustdata Company Identify by domain + Web Fetch (credits; self-published evidence) · Stripe **test mode** (a card-charge simulation, not a vendor payout). Not usable: the MCA registry (Cloudflare/login). Details and limitations: [`docs/BUSINESS.md`](docs/BUSINESS.md) §4.
+
+## Rules we hold ourselves to
+Test-mode payments only · secrets only in `.env` · no data about people · bank accounts stored only as fingerprints + last 4 · a person approves every payment · "cannot verify" beats a wrong answer.
