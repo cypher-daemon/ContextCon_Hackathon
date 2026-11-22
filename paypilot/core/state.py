@@ -21,7 +21,7 @@ ALLOWED: dict[S, frozenset[S]] = {
     S.DECIDED: frozenset({S.POSTED, S.AWAITING_APPROVAL, S.HELD, S.CANNOT_VERIFY, S.STALE}),
     S.AWAITING_APPROVAL: frozenset({S.APPROVED, S.REJECTED, S.HELD, S.STALE}),   # ->HELD: vendor contained at enqueue
     S.HELD: frozenset({S.APPROVED, S.REJECTED, S.STALE}),                        # ->APPROVED: overridable flags only + reason
-    S.APPROVED: frozenset({S.PAYMENT_IN_PROGRESS}),
+    S.APPROVED: frozenset({S.PAYMENT_IN_PROGRESS, S.HELD}),                      # ->HELD: bank account changed before execution (refused, no provider call)
     S.PAYMENT_IN_PROGRESS: frozenset({S.PAID, S.PAYMENT_UNCERTAIN, S.FAILED}),
     S.PAYMENT_UNCERTAIN: frozenset({S.PAID, S.FAILED}),                          # reconcile evidence only
     S.FAILED: frozenset({S.HELD}),                                               # fresh checks + new approval before retry

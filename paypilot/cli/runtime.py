@@ -131,13 +131,12 @@ def check_provider(name: str | None, cfg: RunConfig) -> str:
             raise CliError("razorpayx_test needs RAZORPAYX_KEY_ID starting with rzp_test_ (live keys are refused)")
         if not os.environ.get("RAZORPAYX_KEY_SECRET") or not os.environ.get("RAZORPAYX_ACCOUNT_NUMBER"):
             raise CliError("razorpayx_test needs RAZORPAYX_KEY_SECRET and RAZORPAYX_ACCOUNT_NUMBER in .env")
-        raise CliError("the razorpayx_test adapter is not built yet (task A9); use --provider fake")
     return provider
 
 
-def begin_recovery(con: sqlite3.Connection, run_id: str) -> None:
+def begin_recovery(con: sqlite3.Connection, run_id: str, cfg: RunConfig, session_id: str = "recovery") -> None:
     """Reconcile-first gate for run/resume (the approval service calls the same core function itself)."""
-    _begin_recovery(con, run_id, utcnow)
+    _begin_recovery(con, run_id, utcnow, cfg, session_id)
 
 
 def storage_paths(root: Path) -> dict[str, str]:

@@ -107,7 +107,7 @@ def approve_item(con: sqlite3.Connection, *, item_id: str, reviewer: str, reason
     run = con.execute("SELECT run_id FROM items WHERE item_id=?", (item_id,)).fetchone()
     if run is None:
         raise ApprovalRefused("UNKNOWN_ITEM", f"no item {item_id}")
-    begin_recovery(con, run["run_id"], lambda: now)
+    begin_recovery(con, run["run_id"], lambda: now, cfg, session_id)
     with tx(con):
         row = con.execute("SELECT * FROM items WHERE item_id=?", (item_id,)).fetchone()
         if row is None:
@@ -268,6 +268,10 @@ def approval_queue(con: sqlite3.Connection, run_id: str) -> tuple[list[dict], in
         d = Decision.model_validate_json(r["decision_json"])
         never = [f for f in d.flags if f in NEVER]
         if r["state"] == "HELD" and (never or any(f not in set(d.overridable) for f in d.flags)) and d.flags:
+            blocked += 1
+            continue
+        pay = con.execute("SELECT status FROM payments WHERE item_id=?", (r["item_id"],)).fetchone()
+        if pay is not None and pay["status"] != "FAILED":          # returned / reversed / uncertain: never offered for approval again
             blocked += 1
             continue
         payload = json.loads(r["payload_json"] or "{}")
